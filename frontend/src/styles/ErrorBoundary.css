@@ -1,0 +1,107 @@
+.error-boundary-container {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 9999;
+  width: 90%;
+  max-width: 600px;
+}
+
+.error-boundary-card {
+  background: linear-gradient(135deg, rgba(30, 30, 35, 0.98) 0%, rgba(20, 20, 25, 0.98) 100%);
+  border: 2px solid rgba(255, 51, 51, 0.5);
+  border-radius: 24px;
+  padding: 3rem;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 
+              0 0 80px rgba(255, 51, 51, 0.2);
+  text-align: center;
+}
+
+.error-icon {
+  font-size: 4rem;
+  margin-bottom: 1.5rem;
+  animation: errorPulse 2s ease-in-out infinite;
+}
+
+@keyframes errorPulse {
+  0%, 100% { 
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% { 
+    transform: scale(1.1);
+    opacity: 0.8;
+  }
+}
+
+.error-title {
+  font-family: -apple-system, system-ui, 'Montserrat', sans-serif;
+  font-size: 2rem;
+  font-weight: 700;
+  color: #FF3333;
+  margin-bottom: 1rem;
+  letter-spacing: -0.5px;
+}
+
+.error-message {
+  font-family: -apple-system, system-ui, sans-serif;
+  font-size: 1rem;
+  color: rgba(244, 244, 244, 0.8);
+  margin-bottom: 2rem;
+  line-height: 1.6;
+}
+
+.error-details {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 51, 51, 0.3);
+  border-radius: 12px;
+  padding: 1rem;
+  margin-bottom: 2rem;
+  text-align: left;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.error-details summary {
+  cursor: pointer;
+  color: #FF6B35;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  user-select: none;
+}
+
+.error-details summary:hover {
+  color: #FFB800;
+}
+
+.error-stack {
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 0.75rem;
+  color: rgba(244, 244, 244, 0.7);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.error-reset-button {
+  background: linear-gradient(135deg, #FF3333, #FF6B35);
+  border: none;
+  color: white;
+  padding: 1rem 2.5rem;
+  border-radius: 12px;
+  font-family: -apple-system, system-ui, sans-serif;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 20px rgba(255, 51, 51, 0.4);
+}
+
+.error-reset-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 30px rgba(255, 51, 51, 0.6);
+}
+
+.error-reset-button:active {
+  transform: translateY(0);
+}
