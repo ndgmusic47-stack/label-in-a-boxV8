@@ -163,6 +163,36 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
     }
   };
 
+  const handleGenerateFromSessionBeat = async () => {
+    if (!sessionData.beatFile) {
+      voice.speak('No session beat found. Please create a beat first.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      voice.speak('Generating lyrics from your session beat...');
+      
+      // Fetch the beat blob
+      const response = await fetch(sessionData.beatFile);
+      const blob = await response.blob();
+
+      const formData = new FormData();
+      formData.append("file", blob, "session-beat.wav");
+
+      const result = await api.generateLyricsFromBeat(formData, sessionId);
+
+      setLyrics(result.lyrics);
+      updateSessionData({ lyricsData: result.lyrics });
+
+      voice.speak('Here are your lyrics based on the session beat.');
+    } catch (err) {
+      voice.speak("Couldn't generate lyrics from the session beat.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleGenerate = async () => {
     setLoading(true);
     
@@ -313,6 +343,17 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
                 whileTap={{ scale: 0.98 }}
               >
                 {loading ? 'Generating...' : 'Generate Free Lyrics'}
+              </motion.button>
+
+              <motion.button
+                onClick={handleGenerateFromSessionBeat}
+                disabled={loading || !sessionData.beatFile}
+                className="w-full py-4 bg-studio-red hover:bg-studio-red/80 disabled:bg-studio-gray
+                         text-studio-white font-montserrat font-semibold rounded-lg"
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                {loading ? 'Generating...' : 'Generate Lyrics From Session Beat'}
               </motion.button>
             </div>
           </div>

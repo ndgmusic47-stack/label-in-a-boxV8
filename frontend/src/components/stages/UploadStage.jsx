@@ -4,43 +4,100 @@ import { api } from '../../utils/api';
 import StageWrapper from './StageWrapper';
 import WavesurferPlayer from '../WavesurferPlayer';
 
-export default function UploadStage({ sessionId, sessionData, updateSessionData, voice, onClose }) {
+export default function UploadStage({ sessionId, sessionData, updateSessionData, voice, onClose, completeStage }) {
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
+
+  // V20: Frontend audio validation
+  const validateAudioFile = (file) => {
+    // Check file size (50MB limit)
+    const maxSize = 50 * 1024 * 1024; // 50MB in bytes
+    if (file.size > maxSize) {
+      return { valid: false, error: 'File size exceeds 50MB limit' };
+    }
+
+    // Check file extension (supported formats: .wav, .mp3, .aiff)
+    const allowedExtensions = ['.wav', '.mp3', '.aiff'];
+    const fileName = file.name.toLowerCase();
+    const hasValidExtension = allowedExtensions.some(ext => fileName.endsWith(ext));
+    
+    if (!hasValidExtension) {
+      return { valid: false, error: 'Unsupported format. Please use .wav, .mp3, or .aiff' };
+    }
+
+    return { valid: true };
+  };
 
   const handleDrop = useCallback(async (e) => {
     e.preventDefault();
     setDragging(false);
     
-    const files = Array.from(e.dataTransfer.files);
-    const audioFile = files.find(f => f.type.startsWith('audio/') || f.name.endsWith('.wav'));
-    
-    if (audioFile) {
-      await uploadFile(audioFile);
-    } else {
-      setError('Please drop an audio file (.wav, .mp3, .m4a)');
-      voice.speak('Please drop an audio file');
+    try {
+      const files = Array.from(e.dataTransfer.files);
+      const audioFile = files.find(f => f.type.startsWith('audio/') || f.name.match(/\.(wav|mp3|aiff)$/i));
+      
+      if (audioFile) {
+        // V20: Validate before upload
+        const validation = validateAudioFile(audioFile);
+        if (!validation.valid) {
+          setError(validation.error);
+          voice.speak('There was a problem uploading your vocal file.');
+          return;
+        }
+        await uploadFile(audioFile);
+      } else {
+        setError('Please drop an audio file (.wav, .mp3, .aiff)');
+        voice.speak('Please drop an audio file');
+      }
+    } catch (err) {
+      setError(err.message || 'An error occurred');
+      voice.speak('There was a problem uploading your vocal file.');
     }
-  }, [sessionId]);
+  }, [sessionId, voice]);
 
   const uploadFile = async (file) => {
     setUploading(true);
     setError(null);
     
     try {
+      // V20: Frontend validation before upload
+      const validation = validateAudioFile(file);
+      if (!validation.valid) {
+        setError(validation.error);
+        voice.speak('There was a problem uploading your vocal file.');
+        setUploading(false);
+        return;
+      }
+
       voice.speak(`Uploading your vocal recording...`);
       
       // Upload recording
       const result = await api.uploadRecording(file, sessionId);
       
+      // V20: Extract file URL from result
+      const fileUrl = result.file_url || result.vocal_url || result.uploaded;
+      
+      // V20: Update sessionData with vocal file
+      updateSessionData({
+        vocalFile: fileUrl,
+        vocalUploaded: true
+      });
+      
       // Sync with backend project state to get vocalFile from project.assets.stems[0].url
       await api.syncProject(sessionId, updateSessionData);
       
-      voice.speak('Your vocal is uploaded and ready to mix!');
+      // V20: Auto-complete upload stage
+      if (completeStage) {
+        completeStage('upload');
+      }
+      
+      // V20: Voice feedback on success
+      voice.speak('Vocal uploaded successfully. You can proceed to the mix stage.');
     } catch (err) {
-      setError(err.message);
-      voice.speak('Upload failed. Please try again.');
+      setError(err.message || 'Upload failed. Please try again.');
+      // V20: Voice feedback on error
+      voice.speak('There was a problem uploading your vocal file.');
     } finally {
       setUploading(false);
     }
@@ -48,7 +105,16 @@ export default function UploadStage({ sessionId, sessionData, updateSessionData,
 
   const handleFileSelect = (e) => {
     const file = e.target.files[0];
-    if (file) uploadFile(file);
+    if (file) {
+      // V20: Validate before upload
+      const validation = validateAudioFile(file);
+      if (!validation.valid) {
+        setError(validation.error);
+        voice.speak('There was a problem uploading your vocal file.');
+        return;
+      }
+      uploadFile(file);
+    }
   };
 
   return (
@@ -83,7 +149,7 @@ export default function UploadStage({ sessionId, sessionData, updateSessionData,
           <input
             type="file"
             id="file-input"
-            accept="audio/*,.wav,.mp3,.m4a"
+            accept="audio/*,.wav,.mp3,.aiff"
             onChange={handleFileSelect}
             className="hidden"
           />
@@ -93,7 +159,7 @@ export default function UploadStage({ sessionId, sessionData, updateSessionData,
               {uploading ? 'Uploading...' : 'Drop your vocal recording here'}
             </p>
             <p className="text-sm text-studio-white/40 font-poppins mt-2">
-              or click to browse (.wav, .mp3, .m4a)
+              or click to browse (.wav, .mp3, .aiff)
             </p>
           </label>
         </motion.div>
@@ -110,6 +176,33 @@ export default function UploadStage({ sessionId, sessionData, updateSessionData,
           >
             <p className="text-sm text-studio-white/80 mb-3 font-montserrat">✓ Vocal Uploaded</p>
             <WavesurferPlayer url={sessionData.vocalFile} color="#10B981" height={100} />
+          </motion.div>
+        )}
+
+        {/* V20: Show context from previous stages (beat + lyrics) */}
+        {sessionData.beatFile && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="w-full max-w-2xl p-4 bg-studio-gray/30 rounded-lg border border-studio-white/10"
+          >
+            <p className="text-sm text-studio-white/80 mb-3 font-montserrat">Beat Preview</p>
+            <audio controls src={sessionData.beatFile} className="w-full" />
+          </motion.div>
+        )}
+
+        {sessionData.lyricsData && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="w-full max-w-2xl p-4 bg-studio-gray/30 rounded-lg border border-studio-white/10"
+          >
+            <p className="text-sm text-studio-white/80 mb-3 font-montserrat">Lyrics</p>
+            <pre className="text-sm text-studio-white/60 font-poppins whitespace-pre-wrap overflow-auto max-h-48">
+              {typeof sessionData.lyricsData === 'string' 
+                ? sessionData.lyricsData 
+                : (sessionData.lyricsData.lyrics_text || JSON.stringify(sessionData.lyricsData, null, 2))}
+            </pre>
           </motion.div>
         )}
         </div>

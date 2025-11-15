@@ -149,14 +149,19 @@ export const api = {
  },
 
  // V17: Generate lyrics from beat
- generateLyricsFromBeat: async (beatFile, sessionId = null) => {
-   const formData = new FormData();
-   formData.append('file', beatFile);
-   if (sessionId) formData.append('session_id', sessionId);
+ // V18.2: Accepts either File object or FormData object
+ generateLyricsFromBeat: async (fileOrFormData, sessionId = null) => {
+   let body = fileOrFormData instanceof FormData 
+     ? fileOrFormData 
+     : (() => { const fd = new FormData(); fd.append("file", fileOrFormData); return fd; })();
+   
+   if (sessionId) {
+     body.append('session_id', sessionId);
+   }
    
    const response = await fetch(`${API_BASE}/lyrics/from_beat`, {
      method: 'POST',
-     body: formData,
+     body,
    });
    return handleResponse(response);
  },

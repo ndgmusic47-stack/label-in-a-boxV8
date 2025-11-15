@@ -994,42 +994,98 @@ Rewrite the lyrics according to the instruction while maintaining NP22 style. Re
 
 @api.post("/recordings/upload")
 async def upload_recording(file: UploadFile = File(...), session_id: Optional[str] = Form(None)):
-    """Phase 2.2: Upload vocal recording with standardized responses"""
+    """V20: Upload vocal recording with comprehensive validation"""
     session_id = session_id if session_id else str(uuid.uuid4())
     session_path = get_session_media_path(session_id)
     stems_path = session_path / "stems"
     stems_path.mkdir(exist_ok=True, parents=True)
     
     try:
+        # V20: Validate filename
         if not file.filename:
             log_endpoint_event("/recordings/upload", session_id, "error", {"error": "No filename"})
-            return error_response("No filename provided")
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "message": "No filename provided"}
+            )
         
-        if not file.filename.endswith(('.wav', '.mp3', '.m4a', '.aiff', '.flac')):
+        # V20: Validate file extension (allowed: .wav, .mp3, .aiff)
+        allowed_extensions = ('.wav', '.mp3', '.aiff')
+        if not file.filename.lower().endswith(allowed_extensions):
             log_endpoint_event("/recordings/upload", session_id, "error", {"error": "Invalid format"})
-            return error_response("Only audio files allowed (.wav, .mp3, .m4a, .aiff, .flac)")
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "message": "Invalid audio file. Only .wav, .mp3, and .aiff formats are allowed"}
+            )
         
-        # Save to stems folder
-        file_path = stems_path / file.filename
+        # V20: Read file content for validation
         content = await file.read()
+        
+        # V20: Validate file size (50MB limit)
+        max_size = 50 * 1024 * 1024  # 50MB in bytes
+        if len(content) > max_size:
+            log_endpoint_event("/recordings/upload", session_id, "error", {"error": "File too large", "size": len(content)})
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "message": "File size exceeds 50MB limit"}
+            )
+        
+        # V20: Validate file is not zero-length
+        if len(content) == 0:
+            log_endpoint_event("/recordings/upload", session_id, "error", {"error": "Zero-length file"})
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "message": "Invalid audio file. File is empty"}
+            )
+        
+        # V20: Save file temporarily to validate with pydub
+        file_path = stems_path / file.filename
         with open(file_path, 'wb') as f:
             f.write(content)
         
-        # Update project memory
+        # V20: Validate file is actual audio by trying to load with pydub
+        try:
+            audio_segment = AudioSegment.from_file(str(file_path))
+            # Check if audio has any duration (even if very short)
+            if len(audio_segment) == 0:
+                # Clean up invalid file
+                file_path.unlink()
+                log_endpoint_event("/recordings/upload", session_id, "error", {"error": "Corrupted audio"})
+                return JSONResponse(
+                    status_code=400,
+                    content={"ok": False, "message": "Invalid audio file. File appears to be corrupted"}
+                )
+        except Exception as audio_error:
+            # Clean up invalid file
+            try:
+                file_path.unlink()
+            except:
+                pass
+            log_endpoint_event("/recordings/upload", session_id, "error", {"error": f"Audio validation failed: {str(audio_error)}"})
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "message": "Invalid audio file. Could not read audio data"}
+            )
+        
+        # V20: File is valid, update project memory
         memory = get_or_create_project_memory(session_id, MEDIA_DIR)
+        final_url = f"/media/{session_id}/stems/{file.filename}"
         memory.add_asset(
             asset_type="stems",
-            file_url=f"/media/{session_id}/stems/{file.filename}",
+            file_url=final_url,
             metadata={"filename": file.filename, "size": len(content)}
         )
         memory.advance_stage("upload", "mix")
         
         log_endpoint_event("/recordings/upload", session_id, "success", {"filename": file.filename, "size": len(content)})
+        
+        # V20: Return file_url in success response
         return success_response(
             data={
                 "session_id": session_id,
-                "uploaded": f"/media/{session_id}/stems/{file.filename}",
-                "vocal_url": f"/media/{session_id}/stems/{file.filename}",
+                "file_url": final_url,
+                "uploaded": final_url,
+                "vocal_url": final_url,
                 "filename": file.filename,
                 "path": str(file_path)
             },
@@ -1038,7 +1094,10 @@ async def upload_recording(file: UploadFile = File(...), session_id: Optional[st
     
     except Exception as e:
         log_endpoint_event("/recordings/upload", session_id, "error", {"error": str(e)})
-        return error_response(f"Upload failed: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "message": f"Upload failed: {str(e)}"}
+        )
 
 # ============================================================================
 # 4. POST /mix/run - PYDUB CHAIN + OPTIONAL AUPHONIC
