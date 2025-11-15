@@ -90,6 +90,17 @@ class ProjectMemory:
             },
             "beat": {
                 "tempo": 120
+            },
+            "release": {
+                "title": None,
+                "artist": None,
+                "genre": None,
+                "mood": None,
+                "release_date": None,
+                "explicit": False,
+                "cover_art": None,
+                "metadata_path": None,
+                "files": []
             }
         }
     

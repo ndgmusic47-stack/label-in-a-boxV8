@@ -11,6 +11,7 @@ import asyncio
 import time
 import math
 import subprocess
+import io
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
@@ -18,7 +19,7 @@ import logging
 import hashlib
 import zipfile
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, APIRouter, Request, Body
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, APIRouter, Request, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -1404,41 +1405,60 @@ async def mix_process(
         # V25.1: REAL DSP PIPELINE using ffmpeg filters (V25 spec)
         # Build filter chain as single ffmpeg command
         
-        filters = []
-        
         # Stage 1: EQ (3-band) - always apply
-        filters.append(f"equalizer=f=100:t=lowshelf:g={eq_low_gain}")
-        filters.append(f"equalizer=f=1500:t=peak:g={eq_mid_gain}:width=2")
-        filters.append(f"equalizer=f=10000:t=highshelf:g={eq_high_gain}")
+        eq_low_filter = f"equalizer=f=100:t=lowshelf:g={eq_low_gain}"
+        eq_mid_filter = f"equalizer=f=1500:t=peak:g={eq_mid_gain}:width=2"
+        eq_high_filter = f"equalizer=f=10000:t=highshelf:g={eq_high_gain}"
         
         # Stage 2: Compression (compand)
+        # FIX 2: Cast to integer - compand 'points=' must not contain floats
         # Map compression slider (0-1) to compand threshold
         # compression 0 = no compression, 1 = full compression
-        # mix_strength_db: threshold from -10dB (no comp) to -20dB (full comp)
-        mix_strength_db = -10.0 - (compression_val * 10.0)
-        filters.append(f"compand=attacks=0.01:decays=0.2:points=-90/-90|-20/-20|-10/-{abs(mix_strength_db)}|0/0")
+        mix_strength_db_int = int(abs(-10.0 - (compression_val * 10.0)))  # Cast compand threshold to int
+        compand_filter = f"compand=attacks=0.01:decays=0.2:points=-90/-90|-20/-20|-10/-{mix_strength_db_int}|0/0"
         
         # Stage 3: Reverb (aecho)
-        # Map reverb slider (0-1) to delay (20-60ms) and decay (0.2-0.8)
-        delay_ms = 20 + (reverb_val * 40)  # 20-60ms
-        decay = 0.2 + (reverb_val * 0.6)  # 0.2-0.8
-        filters.append(f"aecho=0.8:0.88:{delay_ms/1000.0}:{decay}")
+        # FIX 1: Reverb delay MUST be integer - map slider (0-1) → delay in ms (20-60), decay 0.2-0.8
+        delay_ms = int(20 + (reverb_val * 40))  # always integer between 20 and 60
+        decay = 0.2 + (reverb_val * 0.6)  # 0.2-0.8 (decay can be float)
+        # Note: FFmpeg aecho takes delay in seconds, but user spec shows delay_ms directly
+        # Convert milliseconds to seconds for FFmpeg (delay_ms is already integer)
+        aecho_filter = f"aecho=0.8:0.88:{delay_ms/1000.0}:{decay}"
         
         # Stage 4: Limiter (per slider)
-        # Always apply limiter with limit=0.95
-        filters.append("alimiter=limit=0.95:level=1")
+        limiter_filter = "alimiter=limit=0.95:level=1"
         
         # Stage 5: Final Mastering Chain (always apply)
-        # loudnorm=I=-13:TP=-1:LRA=7,stereotools=mlev=1.05,alimiter=limit=0.98
+        # FIX 3: Stereotools is optional - check availability first
+        stereo_filter = ""
+        try:
+            # Test if stereotools is available in FFmpeg
+            test_result = subprocess.run(
+                ["ffmpeg", "-filters"],
+                capture_output=True,
+                timeout=5
+            )
+            if "stereotools" in test_result.stdout.decode('utf-8', errors='ignore'):
+                stereo_filter = "stereotools=mlev=1.05"
+        except:
+            stereo_filter = ""
+        
+        master_filter = "alimiter=limit=0.98"
+        
+        # FIX 4: Build filter chain safely - remove empty filters, no trailing commas
+        filters = [eq_low_filter, eq_mid_filter, eq_high_filter, compand_filter, aecho_filter, limiter_filter]
+        if stereo_filter:
+            filters.append(stereo_filter)
         filters.append("loudnorm=I=-13:TP=-1:LRA=7")
-        filters.append("stereotools=mlev=1.05")
-        filters.append("alimiter=limit=0.98")
+        filters.append(master_filter)
+        
+        # Remove empty filters to avoid empty commas in chain
+        filter_chain = ",".join([f for f in filters if f])
         
         # V25.1: Execute DSP chain with ffmpeg (single command)
         temp_processed = mix_dir / f"temp_processed_{uuid.uuid4().hex[:8]}.wav"
         
         # Build ffmpeg command with filter chain
-        filter_chain = ",".join(filters)
         cmd = [
             'ffmpeg', '-i', str(input_file_path),
             '-af', filter_chain,
@@ -1453,14 +1473,25 @@ async def mix_process(
                 raise Exception("FFmpeg output file not created")
             # Move to final output
             shutil.move(str(temp_processed), str(output_file))
+            
+            # FIX 5: Guarantee output file exists before returning
+            # Wait for file to exist and have content (up to 400ms)
+            for _ in range(20):  # wait up to 400ms
+                if os.path.exists(output_file) and os.path.getsize(output_file) > 1000:
+                    break
+                time.sleep(0.02)
+            
+            # Final check - raise error if file still missing
+            if not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
+                raise RuntimeError("Output file missing or empty after DSP chain")
+            
             logger.info(f"✅ DSP chain applied: {len(filters)} filters")
         except (subprocess.CalledProcessError, FileNotFoundError, Exception) as e:
             logger.error(f"FFmpeg DSP chain failed: {e}")
             if temp_processed.exists():
                 temp_processed.unlink()
-            # Fallback: copy input to output
-            shutil.copy(str(input_file_path), str(output_file))
-            logger.warning("Using input file as fallback (no DSP applied)")
+            # FIX 6: Remove fallback copy - raise error instead
+            raise RuntimeError(f"DSP chain failed: {e}")
         
         # Clean up temp input file
         if input_file_path and input_file_path.exists() and input_file_path != output_file:
@@ -1522,277 +1553,577 @@ async def mix_process(
                 pass
 
 # ============================================================================
-# 5. POST /release/generate-cover - LOCAL PILLOW ONLY
+# NEW RELEASE MODULE - REDESIGNED
 # ============================================================================
 
-@api.post("/release/generate-cover")
-async def generate_cover(request: ReleaseRequest):
-    """Phase 2.2: Generate cover art using local Pillow with gradient fallback"""
+class ReleaseCoverRequest(BaseModel):
+    session_id: str
+    track_title: str
+    artist_name: str
+    genre: str
+    mood: str
+    style: Optional[str] = Field(default="realistic", description="realistic / abstract / cinematic / illustrated / purple-gold aesthetic")
+
+class ReleaseCopyRequest(BaseModel):
+    session_id: str
+    track_title: str
+    artist_name: str
+    genre: str
+    mood: str
+    lyrics: Optional[str] = ""
+
+class ReleaseMetadataRequest(BaseModel):
+    session_id: str
+    track_title: str
+    artist_name: str
+    mood: str
+    genre: str
+    explicit: bool = False
+    release_date: str
+
+@api.post("/release/cover")
+async def generate_release_cover(request: ReleaseCoverRequest):
+    """Generate AI cover art using OpenAI (3 images, 3000x3000, 1500x1500, 1080x1920)"""
     session_path = get_session_media_path(request.session_id)
+    cover_dir = session_path / "release" / "cover"
+    cover_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        generator = CoverArtGenerator()
-        result = generator.generate_local_cover(
-            track_title=request.title,
-            artist_name=request.artist,
-            session_dir=session_path
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            log_endpoint_event("/release/cover", request.session_id, "error", {"error": "OpenAI API key not configured"})
+            return error_response("OpenAI API key not configured")
+        
+        from openai import OpenAI
+        import base64
+        from PIL import Image
+        from io import BytesIO
+        
+        client = OpenAI(api_key=api_key)
+        
+        # Build prompt according to spec
+        prompt = (
+            f"High-quality album cover for the single '{request.track_title}' "
+            f"by {request.artist_name}. Genre: {request.genre}. Mood: {request.mood}. "
+            f"Style: {request.style}. Clean, cinematic, striking, professional. "
+            "3000×3000 resolution, centered composition."
         )
         
-        if not result.get("ok"):
-            log_endpoint_event("/release/generate-cover", request.session_id, "error", {"error": result.get("error")})
-            return error_response(result.get("error", "Cover generation failed"))
+        # Generate 3 images with base64 response
+        response = client.images.generate(
+            model="dall-e-2",  # Using dall-e-2 as it supports b64_json and n=3
+            prompt=prompt,
+            size="1024x1024",
+            quality="standard",
+            response_format="b64_json",
+            n=3
+        )
+        
+        generated_urls = []
+        
+        for i, img_data in enumerate(response.data):
+            img_bytes = base64.b64decode(img_data.b64_json)
+            img = Image.open(BytesIO(img_bytes)).convert("RGB")
+            
+            # Always upscale to 3000×3000
+            img_3000 = img.resize((3000, 3000), Image.LANCZOS)
+            
+            # Derivative variants
+            img_1500 = img_3000.resize((1500, 1500), Image.LANCZOS)
+            img_vertical = img_3000.resize((1080, 1920), Image.LANCZOS)
+            
+            # Save all variants
+            img_3000.save(cover_dir / f"cover_{i+1}.jpg", "JPEG", quality=95)
+            img_1500.save(cover_dir / f"cover_{i+1}_1500.jpg", "JPEG", quality=95)
+            img_vertical.save(cover_dir / f"cover_{i+1}_vertical.jpg", "JPEG", quality=95)
+            
+            generated_urls.append(
+                f"/media/{request.session_id}/release/cover/cover_{i+1}.jpg"
+            )
+        
+        if not generated_urls:
+            return error_response("Failed to generate any cover art images")
+        
+        log_endpoint_event("/release/cover", request.session_id, "success", {"count": len(generated_urls)})
+        return success_response({"images": generated_urls})
+    
+    except Exception as e:
+        log_endpoint_event("/release/cover", request.session_id, "error", {"error": str(e)})
+        return error_response(f"Cover art generation failed: {str(e)}")
+
+class ReleaseSelectCoverRequest(BaseModel):
+    session_id: str
+    cover_url: str
+
+@api.post("/release/select-cover")
+async def select_release_cover(request: ReleaseSelectCoverRequest):
+    """Save selected cover art to final versions (3000, 1500, vertical) and update memory"""
+    session_path = get_session_media_path(request.session_id)
+    cover_dir = session_path / "release" / "cover"
+    cover_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        index = int(request.cover_url.split("cover_")[1].split(".")[0])
+        
+        src_3000 = cover_dir / f"cover_{index}.jpg"
+        src_1500 = cover_dir / f"cover_{index}_1500.jpg"
+        src_vertical = cover_dir / f"cover_{index}_vertical.jpg"
+        
+        dst_3000 = cover_dir / "final_cover_3000.jpg"
+        dst_1500 = cover_dir / "final_cover_1500.jpg"
+        dst_vertical = cover_dir / "final_cover_vertical.jpg"
+        
+        shutil.copy(src_3000, dst_3000)
+        shutil.copy(src_1500, dst_1500)
+        shutil.copy(src_vertical, dst_vertical)
         
         # Update project memory
         memory = get_or_create_project_memory(request.session_id, MEDIA_DIR)
-        memory.add_asset("cover", f"/media/{request.session_id}/cover.jpg", {"title": request.title, "artist": request.artist})
+        memory.update("release.cover_art", f"/media/{request.session_id}/release/cover/final_cover_3000.jpg")
+        memory.save()
         
-        log_endpoint_event("/release/generate-cover", request.session_id, "success", {"title": request.title})
+        log_endpoint_event("/release/select-cover", request.session_id, "success", {})
+        return success_response({"final_cover": memory.project_data["release"]["cover_art"]})
+    
+    except Exception as e:
+        log_endpoint_event("/release/select-cover", request.session_id, "error", {"error": str(e)})
+        return error_response(f"Failed to select cover art: {str(e)}")
+
+@api.post("/release/copy")
+async def generate_release_copy(request: ReleaseCopyRequest):
+    """Generate release copy: release_description.txt, press_pitch.txt, tagline.txt"""
+    session_path = get_session_media_path(request.session_id)
+    copy_dir = session_path / "release" / "copy"
+    copy_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            # Fallback text
+            release_desc = f"{request.track_title} by {request.artist_name} is a {request.mood} {request.genre} track."
+            press_pitch = f"New release from {request.artist_name}: {request.track_title}"
+            tagline = f"{request.track_title} - {request.artist_name}"
+            genre_tags = [request.genre, request.mood, "new music", "independent artist"]
+        else:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+            
+            prompt = f"""Generate professional release copy for:
+Track: {request.track_title}
+Artist: {request.artist_name}
+Genre: {request.genre}
+Mood: {request.mood}
+{"Lyrics excerpt: " + request.lyrics[:200] if request.lyrics else ""}
+
+Provide:
+1. release_description.txt - Short, clean description (2-3 sentences)
+2. press_pitch.txt - Professional press pitch (1 paragraph)
+3. tagline.txt - Catchy one-liner tagline
+4. genre_tags - 5-7 relevant genre/mood tags (comma-separated)
+
+Format as JSON:
+{{
+  "release_description": "...",
+  "press_pitch": "...",
+  "tagline": "...",
+  "genre_tags": ["tag1", "tag2", ...]
+}}"""
+            
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a professional music publicist. Generate concise, professional release copy."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.8
+            )
+            
+            content = response.choices[0].message.content.strip()
+            # Try to parse JSON
+            try:
+                import re
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    copy_data = json.loads(json_match.group())
+                    release_desc = copy_data.get("release_description", "")
+                    press_pitch = copy_data.get("press_pitch", "")
+                    tagline = copy_data.get("tagline", "")
+                    genre_tags = copy_data.get("genre_tags", [])
+                else:
+                    raise ValueError("No JSON found")
+            except:
+                # Fallback parsing
+                lines = content.split('\n')
+                release_desc = lines[0] if lines else ""
+                press_pitch = lines[1] if len(lines) > 1 else ""
+                tagline = lines[2] if len(lines) > 2 else ""
+                genre_tags = [request.genre, request.mood]
+        
+        # Save files
+        with open(copy_dir / "release_description.txt", 'w', encoding='utf-8') as f:
+            f.write(release_desc)
+        
+        with open(copy_dir / "press_pitch.txt", 'w', encoding='utf-8') as f:
+            f.write(press_pitch)
+        
+        with open(copy_dir / "tagline.txt", 'w', encoding='utf-8') as f:
+            f.write(tagline)
+        
+        # Update project memory
+        memory = get_or_create_project_memory(request.session_id, MEDIA_DIR)
+        copy_files = [
+            f"/media/{request.session_id}/release/copy/release_description.txt",
+            f"/media/{request.session_id}/release/copy/press_pitch.txt",
+            f"/media/{request.session_id}/release/copy/tagline.txt"
+        ]
+        if not memory.project_data.get("release", {}).get("files"):
+            memory.update("release.files", [])
+        current_files = memory.project_data.get("release", {}).get("files", [])
+        for f in copy_files:
+            if f not in current_files:
+                current_files.append(f)
+        memory.update("release.files", current_files)
+        memory.save()
+        
+        log_endpoint_event("/release/copy", request.session_id, "success", {})
         return success_response(
-            data={"url": f"/media/{request.session_id}/cover.jpg"},
-            message="Cover art generated successfully"
+            data={
+                "description_url": f"/media/{request.session_id}/release/copy/release_description.txt",
+                "pitch_url": f"/media/{request.session_id}/release/copy/press_pitch.txt",
+                "tagline_url": f"/media/{request.session_id}/release/copy/tagline.txt"
+            },
+            message="Release copy generated successfully"
         )
     
     except Exception as e:
-        log_endpoint_event("/release/generate-cover", request.session_id, "error", {"error": str(e)})
-        return error_response(f"Cover generation failed: {str(e)}")
+        log_endpoint_event("/release/copy", request.session_id, "error", {"error": str(e)})
+        return error_response(f"Release copy generation failed: {str(e)}")
 
-# ============================================================================
-# 6. POST /release/pack - CREATE RELEASE ZIP
-# ============================================================================
-
-@api.post("/release/pack")
-async def create_release_pack(request: ReleaseRequest):
-    """V22: Create release pack ZIP with mixed.wav, mixed.mp3, cover.jpg, metadata.json, lyrics.txt"""
+@api.post("/release/lyrics")
+async def generate_lyrics_pdf(request: ReleaseRequest):
+    """Generate lyrics.pdf if lyrics exist"""
     session_path = get_session_media_path(request.session_id)
-    release_dir = session_path / "release"
-    release_dir.mkdir(exist_ok=True)
+    lyrics_dir = session_path / "release" / "lyrics"
+    lyrics_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        # Get metadata from request
-        metadata_dict = request.metadata or {}
-        title = metadata_dict.get("title") or request.title or "Untitled"
-        artist = metadata_dict.get("artist") or request.artist or "NP22"
-        genre = metadata_dict.get("genre", "")
-        mood = metadata_dict.get("mood", "")
-        release_date = metadata_dict.get("release_date", datetime.now().isoformat().split('T')[0])
-        isrc = metadata_dict.get("isrc", "")
-        lyrics = request.lyrics or ""
+        lyrics_text = request.lyrics or ""
         
-        # 1. Download mixed file from URL or use local file
-        mixed_file_path = None
-        if request.mixed_file:
-            # First, try to find local file if it's a relative path
-            if request.mixed_file.startswith("/media/"):
-                # Extract filename from path like /media/session_id/filename
-                parts = request.mixed_file.split("/")
-                if len(parts) >= 4:
-                    local_filename = parts[-1]
-                    local_file = session_path / local_filename
-                    if local_file.exists():
-                        mixed_file_path = release_dir / "mixed.wav"
-                        shutil.copy(local_file, mixed_file_path)
-                        logger.info(f"Copied local mixed file to {mixed_file_path}")
-            
-            # If not found locally, try to download
-            if not mixed_file_path or not mixed_file_path.exists():
-                try:
-                    # Handle both absolute URLs and relative paths
-                    if request.mixed_file.startswith("http"):
-                        mixed_url = request.mixed_file
-                    elif request.mixed_file.startswith("/"):
-                        # Relative path - try local first, then construct URL
-                        local_file = Path("." + request.mixed_file)
-                        if local_file.exists():
-                            mixed_file_path = release_dir / "mixed.wav"
-                            shutil.copy(local_file, mixed_file_path)
-                            logger.info(f"Copied local file from {local_file} to {mixed_file_path}")
-                        else:
-                            mixed_url = f"http://localhost:8000{request.mixed_file}"
-                            mixed_file_path = release_dir / "mixed.wav"
-                            response = requests.get(mixed_url, timeout=60)
-                            response.raise_for_status()
-                            with open(mixed_file_path, 'wb') as f:
-                                f.write(response.content)
-                            logger.info(f"Downloaded mixed file to {mixed_file_path}")
-                    else:
-                        # Try local file first
-                        local_file = session_path / request.mixed_file
-                        if local_file.exists():
-                            mixed_file_path = release_dir / "mixed.wav"
-                            shutil.copy(local_file, mixed_file_path)
-                            logger.info(f"Copied local mixed file to {mixed_file_path}")
-                        else:
-                            mixed_url = f"http://localhost:8000/media/{request.session_id}/{request.mixed_file}"
-                            mixed_file_path = release_dir / "mixed.wav"
-                            response = requests.get(mixed_url, timeout=60)
-                            response.raise_for_status()
-                            with open(mixed_file_path, 'wb') as f:
-                                f.write(response.content)
-                            logger.info(f"Downloaded mixed file to {mixed_file_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to download mixed file from {request.mixed_file}: {e}")
+        # Check if lyrics exist in project
+        if not lyrics_text:
+            memory = get_or_create_project_memory(request.session_id, MEDIA_DIR)
+            lyrics_file = session_path / "lyrics.txt"
+            if lyrics_file.exists():
+                with open(lyrics_file, 'r', encoding='utf-8') as f:
+                    lyrics_text = f.read()
         
-        # Fallback: Try to find local files
-        if not mixed_file_path or not mixed_file_path.exists():
-            for filename in ["mix.wav", "master.wav", "mixed.wav"]:
-                local_file = session_path / filename
-                if local_file.exists():
-                    mixed_file_path = release_dir / "mixed.wav"
-                    shutil.copy(local_file, mixed_file_path)
-                    logger.info(f"Using fallback local file: {filename}")
-                    break
+        if not lyrics_text or not lyrics_text.strip():
+            log_endpoint_event("/release/lyrics", request.session_id, "success", {"skipped": True})
+            return success_response(
+                data={"skipped": True, "message": "No lyrics found"},
+                message="No lyrics to generate PDF for"
+            )
         
-        if not mixed_file_path or not mixed_file_path.exists():
-            log_endpoint_event("/release/pack", request.session_id, "error", {"error": "No audio file"})
-            return error_response("No mixed file found. Please ensure you have a mixed/master file.")
+        # Generate PDF using reportlab
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
         
-        # 2. Download cover art from URL or use local file
-        cover_file_path = None
-        if request.cover_file:
-            # First, try to find local file if it's a relative path
-            if request.cover_file.startswith("/media/"):
-                # Extract filename from path like /media/session_id/filename
-                parts = request.cover_file.split("/")
-                if len(parts) >= 4:
-                    local_filename = parts[-1]
-                    local_file = session_path / local_filename
-                    if local_file.exists():
-                        cover_file_path = release_dir / "cover.jpg"
-                        shutil.copy(local_file, cover_file_path)
-                        logger.info(f"Copied local cover art to {cover_file_path}")
-            
-            # If not found locally, try to download
-            if not cover_file_path or not cover_file_path.exists():
-                try:
-                    # Handle both absolute URLs and relative paths
-                    if request.cover_file.startswith("http"):
-                        cover_url = request.cover_file
-                    elif request.cover_file.startswith("/"):
-                        # Relative path - try local first, then construct URL
-                        local_file = Path("." + request.cover_file)
-                        if local_file.exists():
-                            cover_file_path = release_dir / "cover.jpg"
-                            shutil.copy(local_file, cover_file_path)
-                            logger.info(f"Copied local cover from {local_file} to {cover_file_path}")
-                        else:
-                            cover_url = f"http://localhost:8000{request.cover_file}"
-                            cover_file_path = release_dir / "cover.jpg"
-                            response = requests.get(cover_url, timeout=30)
-                            response.raise_for_status()
-                            with open(cover_file_path, 'wb') as f:
-                                f.write(response.content)
-                            logger.info(f"Downloaded cover art to {cover_file_path}")
-                    else:
-                        # Try local file first
-                        local_file = session_path / request.cover_file
-                        if local_file.exists():
-                            cover_file_path = release_dir / "cover.jpg"
-                            shutil.copy(local_file, cover_file_path)
-                            logger.info(f"Copied local cover art to {cover_file_path}")
-                        else:
-                            cover_url = f"http://localhost:8000/media/{request.session_id}/{request.cover_file}"
-                            cover_file_path = release_dir / "cover.jpg"
-                            response = requests.get(cover_url, timeout=30)
-                            response.raise_for_status()
-                            with open(cover_file_path, 'wb') as f:
-                                f.write(response.content)
-                            logger.info(f"Downloaded cover art to {cover_file_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to download cover art from {request.cover_file}: {e}")
-                    # Fallback to local file
-                    local_cover = session_path / "cover.jpg"
-                    if local_cover.exists():
-                        cover_file_path = release_dir / "cover.jpg"
-                        shutil.copy(local_cover, cover_file_path)
-                        logger.info(f"Using fallback local cover art")
+        pdf_path = lyrics_dir / "lyrics.pdf"
+        doc = SimpleDocTemplate(str(pdf_path), pagesize=letter)
         
-        # 3. Export MP3 using pydub
-        mp3_file_path = release_dir / "mixed.mp3"
-        try:
-            audio = AudioSegment.from_file(str(mixed_file_path))
-            audio.export(str(mp3_file_path), format="mp3", bitrate="320k")
-            logger.info(f"Exported MP3 to {mp3_file_path}")
-        except Exception as e:
-            logger.error(f"Failed to export MP3: {e}")
-            return error_response(f"Failed to export MP3: {str(e)}")
+        # Build content
+        story = []
+        styles = getSampleStyleSheet()
         
-        # Get audio duration
-        duration_seconds = len(audio) / 1000.0
+        # Title style
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            textColor='black',
+            spaceAfter=30,
+            alignment=1  # Center
+        )
         
-        # 4. Generate metadata.json
+        # Normal style
+        normal_style = ParagraphStyle(
+            'CustomNormal',
+            parent=styles['Normal'],
+            fontSize=12,
+            textColor='black',
+            leading=18
+        )
+        
+        # Title page
+        title = request.title or "Untitled"
+        artist = request.artist or "Unknown Artist"
+        story.append(Paragraph(f"{artist}", title_style))
+        story.append(Paragraph(f"{title}", title_style))
+        story.append(PageBreak())
+        
+        # Lyrics content
+        lines = lyrics_text.split('\n')
+        for line in lines:
+            if line.strip():
+                story.append(Paragraph(line.strip(), normal_style))
+            else:
+                story.append(Spacer(1, 0.2*inch))
+        
+        doc.build(story)
+        
+        # Update project memory
+        pdf_url = f"/media/{request.session_id}/release/lyrics/lyrics.pdf"
         memory = get_or_create_project_memory(request.session_id, MEDIA_DIR)
-        bpm = memory.project_data.get("metadata", {}).get("tempo") or memory.project_data.get("beat", {}).get("tempo")
+        if not memory.project_data.get("release", {}).get("files"):
+            memory.update("release.files", [])
+        current_files = memory.project_data.get("release", {}).get("files", [])
+        if pdf_url not in current_files:
+            current_files.append(pdf_url)
+        memory.update("release.files", current_files)
+        memory.save()
+        
+        log_endpoint_event("/release/lyrics", request.session_id, "success", {})
+        return success_response(
+            data={"pdf_url": pdf_url},
+            message="Lyrics PDF generated successfully"
+        )
+    
+    except Exception as e:
+        log_endpoint_event("/release/lyrics", request.session_id, "error", {"error": str(e)})
+        return error_response(f"Lyrics PDF generation failed: {str(e)}")
+
+@api.post("/release/metadata")
+async def generate_release_metadata(request: ReleaseMetadataRequest):
+    """Generate metadata.json with track info"""
+    session_path = get_session_media_path(request.session_id)
+    metadata_dir = session_path / "release" / "metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        # Get audio duration from mixed/master file
+        duration_seconds = 0
+        bpm = None
+        key = None
+        
+        # Try to find audio file
+        for filename in ["mix/mixed_mastered.wav", "mix.wav", "master.wav"]:
+            audio_file = session_path / filename
+            if audio_file.exists():
+                try:
+                    audio = AudioSegment.from_file(str(audio_file))
+                    duration_seconds = len(audio) / 1000.0
+                    break
+                except:
+                    pass
+        
+        # Get BPM and key from project memory
+        memory = get_or_create_project_memory(request.session_id, MEDIA_DIR)
+        bpm = memory.project_data.get("metadata", {}).get("tempo")
+        key = memory.project_data.get("metadata", {}).get("key")
         
         metadata = {
-            "title": title,
-            "artist": artist,
-            "isrc": isrc,
-            "genre": genre,
-            "mood": mood,
-            "release_date": release_date,
-            "duration_seconds": duration_seconds,
-            "bpm": bpm
+            "title": request.track_title,
+            "artist": request.artist_name,
+            "genre": request.genre,
+            "mood": request.mood,
+            "explicit": request.explicit,
+            "release_date": request.release_date,
+            "duration_seconds": round(duration_seconds, 2),
+            "bpm": bpm,
+            "key": key
         }
         
-        metadata_file = release_dir / "metadata.json"
-        with open(metadata_file, 'w') as f:
+        metadata_file = metadata_dir / "metadata.json"
+        with open(metadata_file, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2)
         
-        # 5. Generate lyrics.txt
-        lyrics_file = release_dir / "lyrics.txt"
-        with open(lyrics_file, 'w', encoding='utf-8') as f:
-            f.write(lyrics)
+        # Update project memory with full release info
+        metadata_url = f"/media/{request.session_id}/release/metadata/metadata.json"
+        memory = get_or_create_project_memory(request.session_id, MEDIA_DIR)
+        memory.update("release.title", request.track_title)
+        memory.update("release.artist", request.artist_name)
+        memory.update("release.genre", request.genre)
+        memory.update("release.mood", request.mood)
+        memory.update("release.explicit", request.explicit)
+        memory.update("release.release_date", request.release_date)
+        memory.update("release.metadata_path", metadata_url)
+        if not memory.project_data.get("release", {}).get("files"):
+            memory.update("release.files", [])
+        current_files = memory.project_data.get("release", {}).get("files", [])
+        if metadata_url not in current_files:
+            current_files.append(metadata_url)
+        memory.update("release.files", current_files)
+        memory.save()
         
-        # 6. Assemble ZIP file
+        log_endpoint_event("/release/metadata", request.session_id, "success", {})
+        return success_response(
+            data={"metadata_url": metadata_url},
+            message="Metadata generated successfully"
+        )
+    
+    except Exception as e:
+        log_endpoint_event("/release/metadata", request.session_id, "error", {"error": str(e)})
+        return error_response(f"Metadata generation failed: {str(e)}")
+
+class ReleaseFilesRequest(BaseModel):
+    session_id: str
+
+@api.get("/release/files")
+async def list_release_files(session_id: str = Query(...)):
+    """List all release files dynamically"""
+    session_path = get_session_media_path(session_id)
+    release_dir = session_path / "release"
+    
+    try:
+        files = []
+        
+        # Audio files
+        audio_dir = release_dir / "audio"
+        if audio_dir.exists():
+            audio_file = audio_dir / "mixed_mastered.wav"
+            if audio_file.exists():
+                files.append(f"/media/{session_id}/release/audio/mixed_mastered.wav")
+        
+        # Cover art (final_cover_3000.jpg, final_cover_1500.jpg, final_cover_vertical.jpg)
+        cover_dir = release_dir / "cover"
+        if cover_dir.exists():
+            # Scan for final cover files
+            for file in cover_dir.glob("final_cover*.jpg"):
+                files.append(f"/media/{session_id}/release/cover/{file.name}")
+        
+        # Metadata
+        metadata_dir = release_dir / "metadata"
+        if metadata_dir.exists():
+            metadata_file = metadata_dir / "metadata.json"
+            if metadata_file.exists():
+                files.append(f"/media/{session_id}/release/metadata/metadata.json")
+        
+        # Copy files
+        copy_dir = release_dir / "copy"
+        if copy_dir.exists():
+            for copy_file in copy_dir.glob("*.txt"):
+                files.append(f"/media/{session_id}/release/copy/{copy_file.name}")
+        
+        # Lyrics PDF
+        lyrics_dir = release_dir / "lyrics"
+        if lyrics_dir.exists():
+            lyrics_file = lyrics_dir / "lyrics.pdf"
+            if lyrics_file.exists():
+                files.append(f"/media/{session_id}/release/lyrics/lyrics.pdf")
+        
+        log_endpoint_event("/release/files", session_id, "success", {"count": len(files)})
+        return success_response(
+            data={"files": files},
+            message=f"Found {len(files)} release files"
+        )
+    
+    except Exception as e:
+        log_endpoint_event("/release/files", session_id, "error", {"error": str(e)})
+        return error_response(f"Failed to list release files: {str(e)}")
+
+@api.post("/release/download-all")
+async def download_all_release_files(request: ReleaseRequest):
+    """Generate ZIP of all release files (desktop only)"""
+    session_path = get_session_media_path(request.session_id)
+    release_dir = session_path / "release"
+    release_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        # Ensure audio files are in release/audio directory
+        audio_dir = release_dir / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Copy mixed/master files to audio directory if they exist
+        for source_file in ["mix/mixed_mastered.wav", "mix.wav", "master.wav"]:
+            source_path = session_path / source_file
+            if source_path.exists():
+                # Copy WAV
+                dest_wav = audio_dir / "mixed_mastered.wav"
+                shutil.copy(source_path, dest_wav)
+                
+                # Export MP3
+                try:
+                    audio = AudioSegment.from_file(str(source_path))
+                    dest_mp3 = audio_dir / "mixed_mastered.mp3"
+                    audio.export(str(dest_mp3), format="mp3", bitrate="320k")
+                except:
+                    pass
+                break
+        
         zip_file = release_dir / "release_pack.zip"
+        
         with zipfile.ZipFile(zip_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-            # Add mixed.wav
-            zf.write(mixed_file_path, "mixed.wav")
-            # Add mixed.mp3
-            zf.write(mp3_file_path, "mixed.mp3")
-            # Add cover.jpg if exists
-            if cover_file_path and cover_file_path.exists():
-                zf.write(cover_file_path, "cover.jpg")
-            # Add metadata.json
-            zf.write(metadata_file, "metadata.json")
-            # Add lyrics.txt
-            zf.write(lyrics_file, "lyrics.txt")
+            # Audio files
+            if audio_dir.exists():
+                for file in audio_dir.glob("*"):
+                    if file.is_file():
+                        zf.write(file, f"audio/{file.name}")
+            
+            # Cover art (only selected cover)
+            cover_dir = release_dir / "cover"
+            if cover_dir.exists():
+                # Find selected cover (cover_3000.jpg or first cover)
+                selected_cover = cover_dir / "cover_3000.jpg"
+                if not selected_cover.exists():
+                    # Try to find first cover and rename
+                    covers = list(cover_dir.glob("cover_*.jpg"))
+                    if covers:
+                        selected_cover = covers[0]
+                
+                if selected_cover.exists():
+                    # Copy to final names
+                    cover_3000 = cover_dir / "cover_3000.jpg"
+                    cover_1500 = cover_dir / "cover_1500.jpg"
+                    cover_vertical = cover_dir / "cover_vertical.jpg"
+                    
+                    if not cover_3000.exists():
+                        shutil.copy(selected_cover, cover_3000)
+                    if not cover_1500.exists():
+                        img = Image.open(cover_3000)
+                        img_1500 = img.resize((1500, 1500), Image.Resampling.LANCZOS)
+                        img_1500.save(cover_1500, "JPEG", quality=95)
+                    if not cover_vertical.exists():
+                        img = Image.open(cover_3000)
+                        img_vertical = img.resize((1080, 1920), Image.Resampling.LANCZOS)
+                        img_vertical.save(cover_vertical, "JPEG", quality=95)
+                    
+                    zf.write(cover_3000, "cover/cover_3000.jpg")
+                    zf.write(cover_1500, "cover/cover_1500.jpg")
+                    zf.write(cover_vertical, "cover/cover_vertical.jpg")
+            
+            # Lyrics
+            lyrics_dir = release_dir / "lyrics"
+            if lyrics_dir.exists():
+                for file in lyrics_dir.glob("*.pdf"):
+                    zf.write(file, f"lyrics/{file.name}")
+            
+            # Metadata
+            metadata_dir = release_dir / "metadata"
+            if metadata_dir.exists():
+                for file in metadata_dir.glob("*.json"):
+                    zf.write(file, f"metadata/{file.name}")
+            
+            # Copy files
+            copy_dir = release_dir / "copy"
+            if copy_dir.exists():
+                for file in copy_dir.glob("*.txt"):
+                    zf.write(file, f"copy/{file.name}")
         
         zip_url = f"/media/{request.session_id}/release/release_pack.zip"
         
-        # 7. Update ProjectMemory
-        memory.update_metadata(
-            track_title=title,
-            artist_name=artist,
-            genre=genre,
-            mood=mood
-        )
-        memory.add_asset("release_pack", zip_url, {
-            "title": title,
-            "artist": artist,
-            "isrc": isrc,
-            "release_date": release_date,
-            "created_at": datetime.now().isoformat()
-        })
-        if cover_file_path and cover_file_path.exists():
-            cover_url = f"/media/{request.session_id}/release/cover.jpg"
-            memory.add_asset("cover_art", cover_url, {
-                "title": title,
-                "artist": artist,
-                "created_at": datetime.now().isoformat()
-            })
-        
-        memory.advance_stage("release", "content")
-        
-        log_endpoint_event("/release/pack", request.session_id, "success", {"title": title})
+        log_endpoint_event("/release/download-all", request.session_id, "success", {})
         return success_response(
-            data={"zip_url": zip_url, "url": zip_url},
-            message="Release pack created successfully"
+            data={"zip_url": zip_url},
+            message="Release pack ZIP generated successfully"
         )
     
     except Exception as e:
-        log_endpoint_event("/release/pack", request.session_id, "error", {"error": str(e)})
-        return error_response(f"Release pack creation failed: {str(e)}")
+        log_endpoint_event("/release/download-all", request.session_id, "error", {"error": str(e)})
+        return error_response(f"ZIP generation failed: {str(e)}")
 
 # ============================================================================
 # 7. POST /content/ideas - NEW ENDPOINT (DEMO CAPTIONS)

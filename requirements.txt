@@ -15,3 +15,4 @@ scipy
 gtts
 python-dotenv
 aubio
+reportlab

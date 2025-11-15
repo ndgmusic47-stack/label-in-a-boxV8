@@ -260,34 +260,103 @@ export const api = {
 
 
 
-  generateCoverArt: async (title, artist, sessionId) => {
-    const response = await fetch(`${API_BASE}/release/generate-cover`, {
+  // NEW RELEASE MODULE ENDPOINTS
+  generateReleaseCover: async (sessionId, trackTitle, artistName, genre, mood, style = 'realistic') => {
+    const response = await fetch(`${API_BASE}/release/cover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        track_title: trackTitle,
+        artist_name: artistName,
+        genre,
+        mood,
+        style,
+      }),
+    });
+    return handleResponse(response);
+  },
+
+  selectReleaseCover: async (sessionId, coverUrl) => {
+    const response = await fetch(`${API_BASE}/release/select-cover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        cover_url: coverUrl,
+      }),
+    });
+    return handleResponse(response);
+  },
+
+  listReleaseFiles: async (sessionId) => {
+    const response = await fetch(`${API_BASE}/release/files?session_id=${sessionId}`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const result = await handleResponse(response);
+    return result.data || result;
+  },
+
+  generateReleaseCopy: async (sessionId, trackTitle, artistName, genre, mood, lyrics = '') => {
+    const response = await fetch(`${API_BASE}/release/copy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        track_title: trackTitle,
+        artist_name: artistName,
+        genre,
+        mood,
+        lyrics,
+      }),
+    });
+    return handleResponse(response);
+  },
+
+  generateLyricsPDF: async (sessionId, title, artist, lyrics) => {
+    const response = await fetch(`${API_BASE}/release/lyrics`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         session_id: sessionId,
         title,
         artist,
+        lyrics,
+      }),
+    });
+    return handleResponse(response);
+  },
+
+  generateReleaseMetadata: async (sessionId, trackTitle, artistName, mood, genre, explicit, releaseDate) => {
+    const response = await fetch(`${API_BASE}/release/metadata`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        track_title: trackTitle,
+        artist_name: artistName,
+        mood,
+        genre,
+        explicit,
+        release_date: releaseDate,
+      }),
+    });
+    return handleResponse(response);
+  },
+
+  downloadAllReleaseFiles: async (sessionId) => {
+    const response = await fetch(`${API_BASE}/release/download-all`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
       }),
     });
     return handleResponse(response);
   },
 
 
- createReleasePack: async (sessionId, mixedFile, coverFile, metadata, lyrics) => {
-   const response = await fetch(`${API_BASE}/release/pack`, {
-     method: 'POST',
-     headers: { 'Content-Type': 'application/json' },
-     body: JSON.stringify({
-       session_id: sessionId,
-       mixed_file: mixedFile,
-       cover_file: coverFile,
-       metadata: metadata,
-       lyrics: lyrics || "",
-     }),
-   });
-   return handleResponse(response);
- },
 
   // V23.1: LEGACY - Old caption generator removed
   // generateContent: async (title, artist, sessionId = null) => {
