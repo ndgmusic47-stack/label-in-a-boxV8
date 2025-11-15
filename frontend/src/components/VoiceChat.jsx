@@ -12,7 +12,7 @@ export default function VoiceChat({ voice, activeStage, sessionData }) {
   };
 
   return (
-    <div className="fixed bottom-8 left-8 z-30 flex flex-col gap-4 max-w-md
+    <div className="fixed bottom-8 left-8 z-[9999] flex flex-col gap-4 max-w-md
                     pb-20 md:pb-8
                     pointer-events-auto">
       {/* Voice Button */}

@@ -1,10 +1,9 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { useState, useEffect, useRef, forwardRef } from 'react';
+import { useState, useEffect, forwardRef } from 'react';
 import '../styles/Timeline.css';
 
-const Timeline = forwardRef(({ currentStage, completedStages = [], onStageClick, showBackButton, onBackToTimeline, onStagePositionsUpdate }, ref) => {
+const Timeline = forwardRef(({ currentStage, completedStages = [], onStageClick, showBackButton, onBackToTimeline }, ref) => {
   const [showGoalModal, setShowGoalModal] = useState(false);
-  const stageRefs = useRef({});
   
   const stages = [
     { id: 'beat', icon: '🎵', label: 'Beat', dept: 'Echo' },
@@ -38,49 +37,6 @@ const Timeline = forwardRef(({ currentStage, completedStages = [], onStageClick,
 
   const progressPercentage = (completedStages.length / stages.length) * 100;
   const isGoalReached = completedStages.length === stages.length;
-
-  // Phase 3: Track stage positions for MistLayer
-  useEffect(() => {
-    let lastPositions = null;
-    
-    const updatePositions = () => {
-      const positions = {};
-      stages.forEach(stage => {
-        const element = stageRefs.current[stage.id];
-        if (element) {
-          const rect = element.getBoundingClientRect();
-          positions[stage.id] = {
-            x: Math.round(rect.left + rect.width / 2),
-            y: Math.round(rect.top + rect.height / 2)
-          };
-        }
-      });
-      
-      // Only update if positions actually changed
-      const positionsStr = JSON.stringify(positions);
-      if (onStagePositionsUpdate && Object.keys(positions).length > 0 && positionsStr !== lastPositions) {
-        lastPositions = positionsStr;
-        onStagePositionsUpdate(positions);
-      }
-    };
-
-    // Debounce resize events
-    let resizeTimer;
-    const handleResize = () => {
-      clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(updatePositions, 150);
-    };
-
-    // Initial update after mount
-    const timer = setTimeout(updatePositions, 100);
-    window.addEventListener('resize', handleResize);
-    
-    return () => {
-      clearTimeout(timer);
-      clearTimeout(resizeTimer);
-      window.removeEventListener('resize', handleResize);
-    };
-  }, [onStagePositionsUpdate]);
 
   useEffect(() => {
     if (isGoalReached && !showGoalModal) {
@@ -135,7 +91,6 @@ const Timeline = forwardRef(({ currentStage, completedStages = [], onStageClick,
             return (
               <div key={stage.id} className="timeline-stage-wrapper">
                 <motion.div
-                  ref={(el) => {stageRefs.current[stage.id] = el;}}
                   className={`timeline-stage ${status}`}
                   onClick={() => onStageClick(stage.id)}
                   whileHover={{ scale: 1.1 }}

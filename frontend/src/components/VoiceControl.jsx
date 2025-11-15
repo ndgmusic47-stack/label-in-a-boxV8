@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 /**
@@ -30,6 +30,13 @@ export default function VoiceControl() {
     };
 
     window.stopVoice = () => {
+      // Stop window.currentVoiceAudio if it exists
+      if (window.currentVoiceAudio) {
+        window.currentVoiceAudio.pause();
+        window.currentVoiceAudio.currentTime = 0;
+        window.currentVoiceAudio = null;
+      }
+      // Also stop audioRef if it exists
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current.currentTime = 0;
@@ -45,57 +52,111 @@ export default function VoiceControl() {
     };
   }, []);
 
+  const playNext = useCallback((queueOverride = null) => {
+    const queue = queueOverride || audioQueue;
+    if (queue.length === 0) return;
+
+    // Stop any currently playing audio before playing new one
+    if (window.currentVoiceAudio) {
+      window.currentVoiceAudio.pause();
+      window.currentVoiceAudio.currentTime = 0;
+      window.currentVoiceAudio = null;
+    }
+
+    const nextVoice = queue[0];
+    setCurrentVoice(nextVoice.name || nextVoice.voice);
+    setCurrentSubtitle(nextVoice.text);
+
+    if (nextVoice.file_url) {
+      // Create new Audio instance and assign to window.currentVoiceAudio
+      const audio = new Audio(nextVoice.file_url);
+      audio.volume = isMuted ? 0 : volume;
+      window.currentVoiceAudio = audio;
+      audioRef.current = audio;
+      
+      const handleEnded = () => {
+        setAudioQueue(prev => {
+          const newQueue = prev.slice(1);
+          setCurrentSubtitle('');
+          setCurrentVoice(null);
+          
+          // Clear window.currentVoiceAudio
+          if (window.currentVoiceAudio) {
+            window.currentVoiceAudio = null;
+          }
+          
+          // Play next in queue if there's more
+          if (newQueue.length > 0) {
+            setTimeout(() => {
+              playNext(newQueue);
+            }, 300);
+          }
+          
+          return newQueue;
+        });
+      };
+      
+      audio.onended = handleEnded;
+      audio.onerror = () => {
+        setAudioQueue(prev => prev.slice(1));
+        setCurrentSubtitle('');
+        setCurrentVoice(null);
+        window.currentVoiceAudio = null;
+      };
+      
+      audio.play().catch(err => {
+        console.error('Audio play failed:', err);
+        window.currentVoiceAudio = null;
+      });
+    }
+  }, [audioQueue, isMuted, volume]);
+
   // Process audio queue
   useEffect(() => {
     if (audioQueue.length > 0 && !audioRef.current?.src) {
       playNext();
     }
-  }, [audioQueue]);
-
-  const playNext = () => {
-    if (audioQueue.length === 0) return;
-
-    const nextVoice = audioQueue[0];
-    setCurrentVoice(nextVoice.name || nextVoice.voice);
-    setCurrentSubtitle(nextVoice.text);
-
-    if (audioRef.current && nextVoice.file_url) {
-      audioRef.current.src = nextVoice.file_url;
-      audioRef.current.volume = isMuted ? 0 : volume;
-      audioRef.current.play();
-    }
-  };
-
-  const handleAudioEnded = () => {
-    setAudioQueue(prev => prev.slice(1));
-    setCurrentSubtitle('');
-    setCurrentVoice(null);
-    
-    // Play next in queue
-    setTimeout(() => {
-      if (audioQueue.length > 1) {
-        playNext();
-      }
-    }, 300);
-  };
+  }, [audioQueue, playNext]);
 
   const handleVolumeChange = (e) => {
     const newVolume = parseFloat(e.target.value);
     setVolume(newVolume);
+    // Update window.currentVoiceAudio volume
+    if (window.currentVoiceAudio) {
+      window.currentVoiceAudio.volume = isMuted ? 0 : newVolume;
+    }
+    // Also update audioRef if it exists
     if (audioRef.current) {
       audioRef.current.volume = isMuted ? 0 : newVolume;
     }
   };
 
   const toggleMute = () => {
-    setIsMuted(!isMuted);
+    const newMuted = !isMuted;
+    setIsMuted(newMuted);
+    // Update window.currentVoiceAudio volume
+    if (window.currentVoiceAudio) {
+      window.currentVoiceAudio.volume = newMuted ? 0 : volume;
+    }
+    // Also update audioRef if it exists
     if (audioRef.current) {
-      audioRef.current.volume = !isMuted ? 0 : volume;
+      audioRef.current.volume = newMuted ? 0 : volume;
     }
   };
 
   const stopCurrent = () => {
+    // Call window.stopVoice which handles window.currentVoiceAudio
     window.stopVoice();
+  };
+
+  const pauseCurrent = () => {
+    // Pause window.currentVoiceAudio if it exists
+    if (window.currentVoiceAudio && !window.currentVoiceAudio.paused) {
+      window.currentVoiceAudio.pause();
+    }
+    if (audioRef.current && !audioRef.current.paused) {
+      audioRef.current.pause();
+    }
   };
 
   return (
@@ -182,7 +243,6 @@ export default function VoiceControl() {
       {/* Hidden Audio Element */}
       <audio
         ref={audioRef}
-        onEnded={handleAudioEnded}
         className="hidden"
       />
     </div>

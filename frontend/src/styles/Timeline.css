@@ -2,10 +2,7 @@
   width: 100%;
   padding: 2rem 4rem;
   background: transparent;
-  position: fixed;
-  top: 50vh;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  position: relative;
   z-index: 5;
 }
 
@@ -348,5 +345,33 @@
 
   .timeline-container {
     padding: 2rem 2rem;
+  }
+}
+
+/* Mobile: Timeline horizontal scroll */
+@media (max-width: 768px) {
+  .timeline-container {
+    padding: 1.5rem 1rem;
+  }
+
+  .timeline-header {
+    margin-bottom: 2rem;
+  }
+
+  .timeline-track {
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .timeline-stages {
+    display: inline-flex;
+    white-space: nowrap;
+    min-width: fit-content;
+    padding-right: 2rem;
+  }
+
+  .timeline-stage-wrapper {
+    flex-shrink: 0;
   }
 }

@@ -21,7 +21,6 @@ function App() {
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [currentStage, setCurrentStage] = useState('beat');
   const [completedStages, setCompletedStages] = useState([]);
-  const [stagePositions, setStagePositions] = useState({});
   const timelineRef = useRef(null);
   const [sessionId, setSessionId] = useState(() => {
     const stored = localStorage.getItem('liab_session_id');
@@ -91,6 +90,7 @@ function App() {
 
   const handleStageClick = (stageId) => {
     setActiveStage(stageId);
+    window.scrollTo({ top: 0, behavior: 'instant' });
     voice.stopSpeaking();
   };
 
@@ -142,10 +142,10 @@ function App() {
   };
 
   return (
-    <div className="relative w-full h-full overflow-hidden bg-studio-black">
-      {/* Red Pulsating Mist Layer - Phase 3 */}
-      {currentStage && !showAnalytics && (
-        <MistLayer activeStage={currentStage} stagePositions={stagePositions} />
+    <div className="app-root">
+      {/* Red Pulsating Mist Layer - Behind everything */}
+      {(activeStage || currentStage) && !showAnalytics && (
+        <MistLayer activeStage={activeStage || currentStage} />
       )}
 
       {/* Main Title */}
@@ -174,37 +174,26 @@ function App() {
         </motion.button>
       )}
 
-      {/* Timeline - Always Visible */}
+      {/* Timeline - Fixed at top */}
       {!showAnalytics && (
-        <Timeline
-          ref={timelineRef}
-          currentStage={currentStage}
-          completedStages={completedStages}
-          onStageClick={handleStageClick}
-          showBackButton={!!activeStage}
-          onBackToTimeline={handleBackToTimeline}
-          onStagePositionsUpdate={setStagePositions}
-        />
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 5 }}>
+          <Timeline
+            ref={timelineRef}
+            currentStage={currentStage}
+            completedStages={completedStages}
+            onStageClick={handleStageClick}
+            showBackButton={!!activeStage}
+            onBackToTimeline={handleBackToTimeline}
+          />
+        </div>
       )}
 
-      {/* Stage Panels */}
-      <AnimatePresence mode="wait">
-        {activeStage && (
-          <motion.div
-            key={activeStage}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 20 }}
-            transition={{ duration: 0.25, ease: "easeOut" }}
-            className="relative z-20"
-            style={{ marginTop: '200px', height: 'calc(100vh - 200px)' }}
-          >
-            <ErrorBoundary onReset={() => setActiveStage(null)}>
-              {renderStage()}
-            </ErrorBoundary>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Main Stage Screen - Below timeline */}
+      <main className="stage-screen">
+        <ErrorBoundary onReset={() => setActiveStage(null)}>
+          {renderStage()}
+        </ErrorBoundary>
+      </main>
 
       {/* Analytics Dashboard */}
       <AnimatePresence>
@@ -219,7 +208,7 @@ function App() {
         )}
       </AnimatePresence>
 
-      {/* Voice Chat Interface */}
+      {/* Voice Chat Interface - Floating above */}
       {voice.isSupported && (
         <VoiceChat
           voice={voice}
@@ -228,7 +217,7 @@ function App() {
         />
       )}
 
-      {/* V4 Voice Control System */}
+      {/* V4 Voice Control System - Floating above */}
       <VoiceControl />
     </div>
   );
