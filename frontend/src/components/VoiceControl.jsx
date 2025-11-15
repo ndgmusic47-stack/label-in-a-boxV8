@@ -70,7 +70,8 @@ export default function VoiceControl() {
     if (nextVoice.file_url) {
       // Create new Audio instance and assign to window.currentVoiceAudio
       const audio = new Audio(nextVoice.file_url);
-      audio.volume = isMuted ? 0 : volume;
+      audio.volume = volume;
+      audio.muted = isMuted;
       window.currentVoiceAudio = audio;
       audioRef.current = audio;
       
@@ -123,30 +124,37 @@ export default function VoiceControl() {
     setVolume(newVolume);
     // Update window.currentVoiceAudio volume
     if (window.currentVoiceAudio) {
-      window.currentVoiceAudio.volume = isMuted ? 0 : newVolume;
+      window.currentVoiceAudio.volume = newVolume;
     }
     // Also update audioRef if it exists
     if (audioRef.current) {
-      audioRef.current.volume = isMuted ? 0 : newVolume;
+      audioRef.current.volume = newVolume;
     }
   };
 
   const toggleMute = () => {
     const newMuted = !isMuted;
     setIsMuted(newMuted);
-    // Update window.currentVoiceAudio volume
+    // Update window.currentVoiceAudio muted property
     if (window.currentVoiceAudio) {
-      window.currentVoiceAudio.volume = newMuted ? 0 : volume;
+      window.currentVoiceAudio.muted = newMuted;
     }
     // Also update audioRef if it exists
     if (audioRef.current) {
-      audioRef.current.volume = newMuted ? 0 : volume;
+      audioRef.current.muted = newMuted;
     }
   };
 
   const stopCurrent = () => {
-    // Call window.stopVoice which handles window.currentVoiceAudio
-    window.stopVoice();
+    // Stop window.currentVoiceAudio
+    if (window.currentVoiceAudio) {
+      window.currentVoiceAudio.pause();
+      window.currentVoiceAudio.currentTime = 0;
+    }
+    // Also call window.stopVoice which handles cleanup
+    if (window.stopVoice) {
+      window.stopVoice();
+    }
   };
 
   const pauseCurrent = () => {
@@ -160,7 +168,7 @@ export default function VoiceControl() {
   };
 
   return (
-    <div className="fixed bottom-24 right-8 z-50">
+    <div className="voice-controls">
       {/* Subtitle Display */}
       <AnimatePresence>
         {currentSubtitle && (

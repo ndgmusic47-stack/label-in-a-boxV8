@@ -143,40 +143,10 @@ function App() {
 
   return (
     <div className="app-root">
-      {/* Red Pulsating Mist Layer - Behind everything */}
-      {(activeStage || currentStage) && !showAnalytics && (
-        <MistLayer activeStage={activeStage || currentStage} />
-      )}
+      <MistLayer activeStage={activeStage || currentStage} />
 
-      {/* Main Title */}
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="absolute top-8 left-1/2 transform -translate-x-1/2 z-10"
-      >
-        <h1 className="text-4xl font-bold font-montserrat tracking-wider text-studio-white">
-          LABEL IN A BOX
-        </h1>
-      </motion.div>
-
-      {/* Analytics Button */}
-      {!activeStage && !showAnalytics && (
-        <motion.button
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          onClick={handleAnalyticsClick}
-          className="absolute top-8 right-8 z-10 px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600
-                   hover:from-blue-500 hover:to-purple-500 rounded-lg font-montserrat font-semibold
-                   text-studio-white transition-all duration-300 flex items-center gap-2
-                   shadow-lg hover:shadow-xl transform hover:scale-105"
-        >
-          <span>📊</span> Analytics
-        </motion.button>
-      )}
-
-      {/* Timeline - Fixed at top */}
       {!showAnalytics && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 5 }}>
+        <div className="timeline-centered">
           <Timeline
             ref={timelineRef}
             currentStage={currentStage}
@@ -188,12 +158,13 @@ function App() {
         </div>
       )}
 
-      {/* Main Stage Screen - Below timeline */}
       <main className="stage-screen">
         <ErrorBoundary onReset={() => setActiveStage(null)}>
           {renderStage()}
         </ErrorBoundary>
       </main>
+
+      <VoiceControl />
 
       {/* Analytics Dashboard */}
       <AnimatePresence>
@@ -216,9 +187,6 @@ function App() {
           sessionData={sessionData}
         />
       )}
-
-      {/* V4 Voice Control System - Floating above */}
-      <VoiceControl />
     </div>
   );
 }

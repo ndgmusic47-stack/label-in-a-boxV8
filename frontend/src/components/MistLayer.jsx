@@ -1,7 +1,7 @@
 import '../styles/mist.css';
 
 /**
- * MistLayer - Red/orange gradient mist background
+ * MistLayer - NP22 Purple/Gold gradient mist background
  * Animates based on activeStage using a simple position map
  */
 export default function MistLayer({ activeStage }) {
@@ -16,17 +16,13 @@ export default function MistLayer({ activeStage }) {
   };
 
   const pos = activeStage ? mistPositions[activeStage] || { x: '50%', y: '50%' } : { x: '50%', y: '50%' };
-  const xPercent = parseFloat(pos.x);
-  const yPercent = parseFloat(pos.y);
   
   return (
     <div 
       className="mist-layer" 
       style={{
-        background: `radial-gradient(circle at ${pos.x} ${pos.y}, rgba(139, 0, 0, 0.4), transparent 60%),
-                    radial-gradient(circle at ${100 - xPercent}% ${100 - yPercent}%, rgba(255, 69, 0, 0.2), transparent 60%)`,
-        transition: 'background 0.8s ease-out',
-        opacity: activeStage ? 1 : 0.6
+        '--x': pos.x,
+        '--y': pos.y
       }}
     />
   );

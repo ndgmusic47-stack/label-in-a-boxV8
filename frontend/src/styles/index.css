@@ -131,19 +131,39 @@ body {
 
 /* Stage Screen - Full screen container below timeline */
 .stage-screen {
-  position: relative;
-  width: 100%;
-  height: calc(100vh - 220px);
-  margin-top: 220px;
-  overflow-y: auto;
-  padding: 2rem;
-  z-index: 20;
+    position: absolute;
+    top: calc(50% + 110px);
+    left: 0;
+    width: 100%;
+    height: calc(100vh - (50% + 110px));
+    overflow-y: auto;
+    padding: 2rem;
+    z-index: 5;
 }
 
 /* Stage Wrapper - Simple container */
 .stage-wrapper {
   width: 100%;
-  background: #1e1e23;
+  padding-bottom: 2rem;
+}
+
+/* Voice Controls */
+.voice-controls {
+  position: fixed;
+  bottom: 40px;
+  right: 20px;
+  z-index: 50;
+  pointer-events: auto;
+}
+
+/* Blocking layers - ensure they don't block clicks */
+.fullscreen-overlay,
+.stage-wrapper-bg,
+.error-boundary,
+.debug-overlay,
+.analytics-mask,
+.analytics-dashboard-overlay {
+    pointer-events: none;
 }
 
 .stage-header {
@@ -188,15 +208,11 @@ body {
     padding: 1rem;
     padding-bottom: 10rem; /* Extra padding for voice chat on mobile */
   }
-  
-  .timeline {
-    flex-direction: column;
-  }
 
   .stage-screen {
-    height: calc(100vh - 150px);
+    top: calc(50% + 90px);
+    height: calc(100vh - (50% + 90px));
     padding: 1rem;
-    margin-top: 150px;
   }
 
   .stage-header {

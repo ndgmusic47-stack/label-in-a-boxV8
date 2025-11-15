@@ -54,7 +54,7 @@ const Timeline = forwardRef(({ currentStage, completedStages = [], onStageClick,
 
   return (
     <>
-      <div className="timeline-container">
+      <div className="timeline">
         {showBackButton && (
           <motion.button
             initial={{ opacity: 0, y: -10 }}
@@ -74,7 +74,6 @@ const Timeline = forwardRef(({ currentStage, completedStages = [], onStageClick,
           <p className="stage-prompt">{getStagePrompt()}</p>
         </div>
 
-      <div className="timeline-track">
         <motion.div 
           className="timeline-progress-bar"
           initial={{ width: 0 }}
@@ -82,126 +81,110 @@ const Timeline = forwardRef(({ currentStage, completedStages = [], onStageClick,
           transition={{ duration: 0.8, ease: 'easeOut' }}
         />
         
-        <div className="timeline-stages">
-          {stages.map((stage, index) => {
-            const status = getStageStatus(stage.id);
-            const isActive = status === 'active';
-            const isCompleted = status === 'completed';
-            
-            return (
-              <div key={stage.id} className="timeline-stage-wrapper">
-                <motion.div
-                  className={`timeline-stage ${status}`}
-                  onClick={() => onStageClick(stage.id)}
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.95 }}
-                  style={{ cursor: 'pointer' }}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.1 }}
-                >
-                  {isActive && (
-                    <motion.div
-                      className="pulse-ring"
-                      animate={{
-                        scale: [1, 1.8],
-                        opacity: [0.5, 0]
-                      }}
-                      transition={{
-                        duration: 2.5,
-                        repeat: Infinity,
-                        ease: 'easeOut',
-                        repeatDelay: 0.3
-                      }}
-                    />
-                  )}
-                  
-                  <div className="stage-icon">{stage.icon}</div>
-                  <div className="stage-label">{stage.label}</div>
-                  <div className="stage-dept">{stage.dept}</div>
-                  
-                  {isCompleted && (
-                    <motion.div
-                      className="completion-check"
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      transition={{ type: 'spring', stiffness: 300 }}
-                    >
-                      ✓
-                    </motion.div>
-                  )}
-                </motion.div>
-                
-                {index < stages.length - 1 && (
-                  <motion.div
-                    className="timeline-connector"
-                    initial={{ scaleX: 0 }}
-                    animate={{ 
-                      scaleX: 1,
-                      backgroundColor: isCompleted ? '#FFB800' : 'rgba(244, 244, 244, 0.2)'
-                    }}
-                    transition={{ delay: index * 0.1 + 0.2, duration: 0.4 }}
-                  />
-                )}
-              </div>
-            );
-          })}
+        {stages.map((stage, index) => {
+          const status = getStageStatus(stage.id);
+          const isActive = status === 'active';
+          const isCompleted = status === 'completed';
           
-          <motion.div
-            className="timeline-goal"
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: stages.length * 0.1 }}
-          >
-            <div className={`goal-icon ${isGoalReached ? 'completed' : ''}`}>🎯</div>
-            <div className={`goal-label ${isGoalReached ? 'completed' : ''}`}>Goal Reached</div>
-          </motion.div>
+          return (
+            <motion.div
+              key={stage.id}
+              className={`timeline-icon ${status}`}
+              onClick={() => onStageClick(stage.id)}
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.95 }}
+              style={{ cursor: 'pointer' }}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.1 }}
+            >
+              {isActive && (
+                <motion.div
+                  className="pulse-ring"
+                  animate={{
+                    scale: [1, 1.8],
+                    opacity: [0.5, 0]
+                  }}
+                  transition={{
+                    duration: 2.5,
+                    repeat: Infinity,
+                    ease: 'easeOut',
+                    repeatDelay: 0.3
+                  }}
+                />
+              )}
+              
+              <div className="stage-icon">{stage.icon}</div>
+              <div className="stage-label">{stage.label}</div>
+              <div className="stage-dept">{stage.dept}</div>
+              
+              {isCompleted && (
+                <motion.div
+                  className="completion-check"
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ type: 'spring', stiffness: 300 }}
+                >
+                  ✓
+                </motion.div>
+              )}
+            </motion.div>
+          );
+        })}
+        
+        <motion.div
+          className="timeline-goal"
+          initial={{ opacity: 0, scale: 0.8 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: stages.length * 0.1 }}
+        >
+          <div className={`goal-icon ${isGoalReached ? 'completed' : ''}`}>🎯</div>
+          <div className={`goal-label ${isGoalReached ? 'completed' : ''}`}>Goal Reached</div>
+        </motion.div>
+
+        <div className="timeline-progress-text">
+          {completedStages.length} of {stages.length} stages complete
+          {progressPercentage === 100 && (
+            <span className="celebration"> — Release Ready! 🎉</span>
+          )}
         </div>
       </div>
 
-      <div className="timeline-progress-text">
-        {completedStages.length} of {stages.length} stages complete
-        {progressPercentage === 100 && (
-          <span className="celebration"> — Release Ready! 🎉</span>
-        )}
-      </div>
-    </div>
-
-    {/* Goal Reached Modal */}
-    <AnimatePresence>
-      {showGoalModal && (
-        <motion.div
-          className="goal-modal-overlay"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          onClick={() => setShowGoalModal(false)}
-        >
+      {/* Goal Reached Modal */}
+      <AnimatePresence>
+        {showGoalModal && (
           <motion.div
-            className="goal-modal"
-            initial={{ scale: 0.8, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.8, opacity: 0 }}
-            transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-            onClick={(e) => e.stopPropagation()}
+            className="goal-modal-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowGoalModal(false)}
           >
-            <div className="goal-modal-icon">🎯</div>
-            <h2 className="goal-modal-title">Cycle Complete!</h2>
-            <p className="goal-modal-message">
-              Your release pack is ready—tracks are mixed, content is created, and analytics are live. 
-              Ready to start your next masterpiece?
-            </p>
-            <button 
-              className="goal-modal-button"
-              onClick={handleRestartCycle}
+            <motion.div
+              className="goal-modal"
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.8, opacity: 0 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+              onClick={(e) => e.stopPropagation()}
             >
-              Restart Cycle
-            </button>
+              <div className="goal-modal-icon">🎯</div>
+              <h2 className="goal-modal-title">Cycle Complete!</h2>
+              <p className="goal-modal-message">
+                Your release pack is ready—tracks are mixed, content is created, and analytics are live. 
+                Ready to start your next masterpiece?
+              </p>
+              <button 
+                className="goal-modal-button"
+                onClick={handleRestartCycle}
+              >
+                Restart Cycle
+              </button>
+            </motion.div>
           </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
-  </>
+        )}
+      </AnimatePresence>
+    </>
   );
 });
 
