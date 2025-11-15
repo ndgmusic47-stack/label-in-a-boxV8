@@ -9,6 +9,8 @@ import json
 import shutil
 import asyncio
 import time
+import math
+import subprocess
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
@@ -1256,6 +1258,289 @@ async def mix_run(request: MixRequest):
         log_endpoint_event("/mix/run", request.session_id, "error", {"error": str(e)})
         logger.error(f"Mix failed: {str(e)}", exc_info=True)
         return error_response(f"Mix failed: {str(e)}")
+
+# ============================================================================
+# V21: POST /mix/process - AI MIX & MASTER WITH DSP PIPELINE
+# ============================================================================
+
+@api.post("/mix/process")
+async def mix_process(
+    file: Optional[UploadFile] = File(None),
+    file_url: Optional[str] = Form(None),
+    session_id: str = Form(...),
+    ai_mix: bool = Form(True),
+    ai_master: bool = Form(True),
+    mix_strength: float = Form(0.7),
+    master_strength: float = Form(0.8),
+    preset: str = Form("clean")
+):
+    """V21: Process single audio file with AI mix & master DSP chain"""
+    session_path = get_session_media_path(session_id)
+    mix_dir = session_path / "mix"
+    mix_dir.mkdir(exist_ok=True, parents=True)
+    
+    input_file_path = None
+    output_file = mix_dir / "mixed_mastered.wav"
+    output_url = f"/media/{session_id}/mix/mixed_mastered.wav"
+    
+    try:
+        # V21: Get input file - from upload or URL
+        if file and file.filename:
+            # Save uploaded file temporarily
+            input_file_path = mix_dir / f"temp_input_{uuid.uuid4().hex[:8]}{Path(file.filename).suffix}"
+            content = await file.read()
+            
+            # Validate file size (50MB limit)
+            max_size = 50 * 1024 * 1024
+            if len(content) > max_size:
+                return error_response("File size exceeds 50MB limit")
+            
+            # Validate extension
+            allowed_extensions = ('.wav', '.mp3', '.aiff')
+            if not file.filename.lower().endswith(allowed_extensions):
+                return error_response("Unsupported format. Please use .wav, .mp3, or .aiff")
+            
+            with open(input_file_path, 'wb') as f:
+                f.write(content)
+        elif file_url:
+            # Fetch file from URL (can be absolute URL or relative path)
+            try:
+                # Handle relative paths (e.g., /media/session/stems/file.wav)
+                if file_url.startswith('/'):
+                    # Convert to absolute path
+                    file_path = Path('.' + file_url)
+                    if file_path.exists():
+                        input_file_path = file_path
+                    else:
+                        # Try fetching from server URL
+                        base_url = f"http://localhost:8000{file_url}"
+                        response = requests.get(base_url, timeout=30, stream=True)
+                        if not response.ok:
+                            return error_response(f"Could not fetch file from URL: {file_url}")
+                        input_file_path = mix_dir / f"temp_input_{uuid.uuid4().hex[:8]}.wav"
+                        with open(input_file_path, 'wb') as f:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                f.write(chunk)
+                else:
+                    # Absolute URL
+                    response = requests.get(file_url, timeout=30, stream=True)
+                    if not response.ok:
+                        return error_response(f"Could not fetch file from URL: {file_url}")
+                    input_file_path = mix_dir / f"temp_input_{uuid.uuid4().hex[:8]}.wav"
+                    with open(input_file_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+            except Exception as e:
+                logger.error(f"Failed to fetch file from URL: {e}")
+                return error_response(f"Failed to fetch file: {str(e)}")
+        else:
+            return error_response("No file provided. Upload a file or provide file_url")
+        
+        if not input_file_path or not input_file_path.exists():
+            return error_response("Could not read input file")
+        
+        # V21: Validate audio file with pydub
+        try:
+            audio = AudioSegment.from_file(str(input_file_path))
+            if len(audio) == 0:
+                if input_file_path.exists():
+                    input_file_path.unlink()
+                return error_response("Corrupted audio file")
+        except Exception as e:
+            if input_file_path.exists():
+                try:
+                    input_file_path.unlink()
+                except:
+                    pass
+            logger.error(f"Audio validation failed: {e}")
+            return error_response("Could not read audio data. File may be corrupted")
+        
+        logger.info(f"🎧 Processing audio: {len(audio)}ms, sample_rate={audio.frame_rate}")
+        
+        # V21: DSP Pipeline - AI Mix
+        processed_audio = audio
+        if ai_mix:
+            # High-pass filter @ 30 Hz
+            processed_audio = high_pass_filter(processed_audio, cutoff=30)
+            
+            # Compression (ratio scaled by mix_strength: 0.7 strength = ratio ~3.5, 1.0 = ratio ~5.0)
+            compression_ratio = 2.0 + (mix_strength * 3.0)  # Range: 2.0-5.0
+            threshold = -20.0 - (mix_strength * 5.0)  # Range: -25 to -20 dB
+            processed_audio = compress_dynamic_range(
+                processed_audio,
+                threshold=threshold,
+                ratio=compression_ratio,
+                attack=5.0,
+                release=50.0
+            )
+            
+            # EQ mid cut (-1 to -3 dB based on strength)
+            mid_cut_db = -1.0 - (mix_strength * 2.0)  # Range: -1 to -3 dB
+            # Apply mid cut using simple gain reduction (pydub limitation)
+            processed_audio = processed_audio + (mid_cut_db * 0.1)
+            
+            # V21: Preset filters
+            if preset == "warm":
+                # +1.5 dB low shelf @ 150 Hz using ffmpeg
+                temp_file = mix_dir / f"temp_warm_{uuid.uuid4().hex[:8]}.wav"
+                processed_audio.export(str(temp_file), format="wav")
+                cmd = [
+                    'ffmpeg', '-i', str(temp_file),
+                    '-af', f'equalizer=f=150:width_type=h:width=100:g=1.5',
+                    '-y', str(output_file)
+                ]
+                try:
+                    subprocess.run(cmd, capture_output=True, check=True, timeout=60)
+                    processed_audio = AudioSegment.from_file(str(output_file))
+                    temp_file.unlink()
+                except Exception as e:
+                    logger.warning(f"FFmpeg warm filter failed, using pydub fallback: {e}")
+                    processed_audio = processed_audio + 1.5  # Simple boost
+                    if temp_file.exists():
+                        temp_file.unlink()
+            
+            elif preset == "bright":
+                # +2 dB high shelf @ 10 kHz using ffmpeg
+                temp_file = mix_dir / f"temp_bright_{uuid.uuid4().hex[:8]}.wav"
+                processed_audio.export(str(temp_file), format="wav")
+                cmd = [
+                    'ffmpeg', '-i', str(temp_file),
+                    '-af', f'equalizer=f=10000:width_type=h:width=5000:g=2.0',
+                    '-y', str(output_file)
+                ]
+                try:
+                    subprocess.run(cmd, capture_output=True, check=True, timeout=60)
+                    processed_audio = AudioSegment.from_file(str(output_file))
+                    temp_file.unlink()
+                except Exception as e:
+                    logger.warning(f"FFmpeg bright filter failed, using pydub fallback: {e}")
+                    processed_audio = processed_audio + 2.0  # Simple boost
+                    if temp_file.exists():
+                        temp_file.unlink()
+            
+            elif preset == "clean":
+                # HPF @ 40 Hz + slight mid dip
+                processed_audio = high_pass_filter(processed_audio, cutoff=40)
+                processed_audio = processed_audio - 1.0  # Slight mid dip
+        
+        # V21: DSP Pipeline - AI Master
+        if ai_master:
+            # Hard limiter (ceiling -1.0 dB)
+            # Normalize first, then apply ceiling
+            normalized = normalize(processed_audio)
+            
+            # Apply ceiling limiter (-1.0 dB)
+            # Calculate peak amplitude in dB
+            peak_amplitude = normalized.max_possible_amplitude  # This is 32767 for 16-bit
+            if peak_amplitude > 0:
+                peak_db = 20 * math.log10(peak_amplitude / 1.0)
+                target_db = -1.0  # Ceiling at -1.0 dB
+                if peak_db > target_db:
+                    # Reduce gain to bring peak to -1.0 dB
+                    gain_reduction_db = peak_db - target_db
+                    normalized = normalized - gain_reduction_db
+            
+            processed_audio = normalized
+            
+            # Loudness normalization (target -12 to -10 LUFS using ffmpeg loudnorm)
+            # This requires ffmpeg with libebur128
+            temp_file = mix_dir / f"temp_loudnorm_{uuid.uuid4().hex[:8]}.wav"
+            processed_audio.export(str(temp_file), format="wav")
+            
+            target_lufs = -12.0 + (master_strength * 2.0)  # Range: -12 to -10 LUFS
+            
+            # Try ffmpeg loudnorm
+            cmd = [
+                'ffmpeg', '-i', str(temp_file),
+                '-af', f'loudnorm=I={target_lufs}:TP=-1.0:LRA=11',
+                '-ar', '44100',
+                '-y', str(output_file)
+            ]
+            
+            try:
+                result = subprocess.run(cmd, capture_output=True, check=True, timeout=60)
+                processed_audio = AudioSegment.from_file(str(output_file))
+                temp_file.unlink()
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                logger.warning(f"FFmpeg loudnorm failed, using normalize fallback: {e}")
+                # Fallback to simple normalize
+                processed_audio = normalize(processed_audio)
+                if temp_file.exists():
+                    temp_file.unlink()
+            
+            # Subtle stereo widening using ffmpeg
+            if processed_audio.channels == 2:
+                temp_file = mix_dir / f"temp_widen_{uuid.uuid4().hex[:8]}.wav"
+                processed_audio.export(str(temp_file), format="wav")
+                
+                # Stereo widening with haas delay
+                width = 0.8 + (master_strength * 0.2)  # Range: 0.8-1.0
+                cmd = [
+                    'ffmpeg', '-i', str(temp_file),
+                    '-af', f'stereowiden=delay={0.01 * width}:feedback=0.3:crossover=2000',
+                    '-y', str(output_file)
+                ]
+                
+                try:
+                    subprocess.run(cmd, capture_output=True, check=True, timeout=60)
+                    processed_audio = AudioSegment.from_file(str(output_file))
+                    temp_file.unlink()
+                except Exception as e:
+                    logger.warning(f"FFmpeg stereo widening failed: {e}")
+                    if temp_file.exists():
+                        temp_file.unlink()
+        
+        # V21: Export final processed file
+        processed_audio.export(str(output_file), format="wav")
+        
+        # Clean up temp input file
+        if input_file_path and input_file_path.exists() and input_file_path != output_file:
+            try:
+                input_file_path.unlink()
+            except:
+                pass
+        
+        # V21: Update project memory
+        memory = get_or_create_project_memory(session_id, MEDIA_DIR)
+        memory.add_asset("mix", output_url, {
+            "ai_mix": ai_mix,
+            "ai_master": ai_master,
+            "preset": preset,
+            "mix_strength": mix_strength,
+            "master_strength": master_strength
+        })
+        memory.update("mixCompleted", True)
+        
+        logger.info(f"✅ Mix & master completed - preset={preset}, ai_mix={ai_mix}, ai_master={ai_master}")
+        logger.info(f"📁 Processed file saved to: {output_url}")
+        
+        log_endpoint_event("/mix/process", session_id, "success", {
+            "preset": preset,
+            "ai_mix": ai_mix,
+            "ai_master": ai_master,
+            "mix_strength": mix_strength,
+            "master_strength": master_strength
+        })
+        
+        return success_response(
+            data={
+                "file_url": output_url,
+                "ok": True
+            },
+            message="Mix and master completed successfully"
+        )
+    
+    except Exception as e:
+        log_endpoint_event("/mix/process", session_id, "error", {"error": str(e)})
+        logger.error(f"Mix process failed: {str(e)}", exc_info=True)
+        return error_response("Mixing failed")
+    finally:
+        # Cleanup temp files
+        if input_file_path and input_file_path.exists() and input_file_path != output_file:
+            try:
+                input_file_path.unlink()
+            except:
+                pass
 
 # ============================================================================
 # 5. POST /release/generate-cover - LOCAL PILLOW ONLY

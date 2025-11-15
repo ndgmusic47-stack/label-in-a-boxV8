@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { api } from '../../utils/api';
 import StageWrapper from './StageWrapper';
 import WavesurferPlayer from '../WavesurferPlayer';
 
-export default function MixStage({ sessionId, sessionData, updateSessionData, voice, onClose }) {
+export default function MixStage({ sessionId, sessionData, updateSessionData, voice, onClose, completeStage }) {
   const [beatVolume, setBeatVolume] = useState(0.8);
   const [vocalVolume, setVocalVolume] = useState(1.0);
   const [eq, setEq] = useState({ low: 0, mid: 0, high: 0 });
@@ -14,9 +14,32 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
   const [mixing, setMixing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState(null);
+  
+  // V21: AI Mix & Master toggles and controls
+  const [aiMixEnabled, setAiMixEnabled] = useState(true);
+  const [aiMasterEnabled, setAiMasterEnabled] = useState(true);
+  const [mixStrength, setMixStrength] = useState(0.7);
+  const [masterStrength, setMasterStrength] = useState(0.8);
+  const [selectedPreset, setSelectedPreset] = useState('clean'); // warm, clean, bright
+  
+  const fileInputRef = useRef(null);
+  const [uploadedFile, setUploadedFile] = useState(null);
 
-  // Allow mixing with just vocals (no beat required)
-  const canMix = sessionData.vocalFile || (sessionData.uploaded && sessionData.uploaded.length > 0);
+  // V21: File selection logic - use uploaded file OR sessionData.vocalFile
+  const getAudioFile = () => {
+    if (uploadedFile) return uploadedFile;
+    if (sessionData.vocalFile) {
+      // Convert URL to file if possible, or return URL for backend to fetch
+      return sessionData.vocalFile;
+    }
+    return null;
+  };
+
+  // V21: Allow mixing with uploaded file OR sessionData.vocalFile
+  const canMix =
+    uploadedFile ||
+    sessionData.vocalFile ||
+    (sessionData.uploaded && sessionData.uploaded.length > 0); // legacy fallback
 
   const handleAutoMix = async () => {
     if (!canMix) return;
@@ -26,9 +49,7 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
     try {
       voice.speak('Setting optimal mix levels for you...');
       
-      // Phase 2.2: Auto-mix uses smart defaults
-      setBeatVolume(0.7);
-      setVocalVolume(1.0);
+      // Phase 2.2: Auto-mix uses smart defaults (single-file mixing context)
       setEq({ low: 2, mid: 0, high: 1 });
       setComp(0.6);
       setReverb(0.4);
@@ -42,43 +63,95 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
     }
   };
 
-  const handleMix = async () => {
-    if (!canMix) {
-      voice.speak('You need to upload vocals first');
+  // V21: Handle file upload
+  const handleFileSelect = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    // Validate audio file
+    const allowedExtensions = ['.wav', '.mp3'];
+    const fileName = file.name.toLowerCase();
+    const hasValidExtension = allowedExtensions.some(ext => fileName.endsWith(ext));
+    
+    if (!hasValidExtension) {
+      voice.speak('Please upload a WAV or MP3 file.');
+      return;
+    }
+    
+    setUploadedFile(file);
+  };
+
+  // V21: New handleMixAndMaster function
+  const handleMixAndMaster = async () => {
+    const audioFile = getAudioFile();
+    
+    if (!audioFile && !canMix) {
+      voice.speak('Please upload a song file to mix.');
       return;
     }
 
     setMixing(true);
     
     try {
-      if (sessionData.beatFile) {
-        voice.speak('Mixing your track with beat now...');
-      } else {
-        voice.speak('Mixing your vocals now...');
+      voice.speak('Mixing and mastering your track. One moment.');
+      
+      // V21: Prepare file for upload
+      let fileToUpload = null;
+      if (uploadedFile) {
+        fileToUpload = uploadedFile;
+      } else if (sessionData.vocalFile && typeof sessionData.vocalFile === 'string') {
+        // Fetch file from URL if it's a string URL
+        try {
+          const response = await fetch(sessionData.vocalFile);
+          const blob = await response.blob();
+          fileToUpload = new File([blob], 'audio.wav', { type: blob.type });
+        } catch (fetchErr) {
+          // If fetch fails, pass the URL to backend
+          fileToUpload = sessionData.vocalFile;
+        }
       }
       
-      // Call backend mix endpoint with proper parameters
-      const result = await api.mixAudio(sessionId, {
-        vocal_gain: vocalVolume,
-        beat_gain: beatVolume,
-        hpf_hz: 80,
-        deess_amount: 0.3
+      if (!fileToUpload) {
+        voice.speak('I could not find the audio file. Please try again.');
+        setMixing(false);
+        return;
+      }
+      
+      // V21: Call new /mix/process endpoint
+      const result = await api.processMix(sessionId, fileToUpload, {
+        ai_mix: aiMixEnabled,
+        ai_master: aiMasterEnabled,
+        mix_strength: mixStrength,
+        master_strength: masterStrength,
+        preset: selectedPreset
       });
       
-      // After successful mix, sync with backend to get updated project state
-      await api.syncProject(sessionId, updateSessionData);
-      
-      if (result.mix_type === 'vocals_only') {
-        voice.speak('Your vocals-only mix is ready!');
+      if (result && result.file_url) {
+        // V21: Update sessionData with mixedFile
+        updateSessionData({ 
+          mixedFile: result.file_url,
+          mixCompleted: true
+        });
+        
+        // V21: Complete the mix stage
+        if (completeStage) {
+          await completeStage('mix');
+        }
+        
+        voice.speak('Your track has been mixed and mastered.');
       } else {
-        voice.speak('Your master is ready! Sounds fire!');
+        throw new Error('No file URL returned');
       }
     } catch (err) {
-      voice.speak('Mix failed. Check your files and try again.');
+      console.error('Mix failed:', err);
+      voice.speak('I could not mix this file. Please try again.');
     } finally {
       setMixing(false);
     }
   };
+
+  // Keep old handleMix for backward compatibility (can be removed later)
+  const handleMix = handleMixAndMaster;
 
   return (
     <StageWrapper 
@@ -89,16 +162,27 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
     >
       <div className="stage-scroll-container">
         <div className="flex flex-col items-center justify-center gap-8 p-6 md:p-10">
-        {/* Source Preview */}
-        {canMix && (
+        {/* V21: File Upload Input (hidden) */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".wav,.mp3"
+          onChange={handleFileSelect}
+          className="hidden"
+        />
+        
+        {/* V21: Source Preview - only show if no processed file exists */}
+        {!sessionData.mixedFile && canMix && (
           <div className="w-full max-w-4xl grid grid-cols-2 gap-6 mb-4">
-            <div className="p-4 bg-studio-gray/20 rounded-lg border border-studio-white/5">
-              <p className="text-xs text-studio-white/60 mb-2 font-montserrat">Beat Preview</p>
-              <WavesurferPlayer url={sessionData.beatFile} color="#3B82F6" height={60} />
-            </div>
+            {sessionData.beatFile && (
+              <div className="p-4 bg-studio-gray/20 rounded-lg border border-studio-white/5">
+                <p className="text-xs text-studio-white/60 mb-2 font-montserrat">Beat Preview</p>
+                <WavesurferPlayer url={sessionData.beatFile} color="#3B82F6" height={60} />
+              </div>
+            )}
             <div className="p-4 bg-studio-gray/20 rounded-lg border border-studio-white/5">
               <p className="text-xs text-studio-white/60 mb-2 font-montserrat">Vocal Preview</p>
-              <WavesurferPlayer url={sessionData.vocalFile} color="#10B981" height={60} />
+              <WavesurferPlayer url={sessionData.vocalFile || (uploadedFile && URL.createObjectURL(uploadedFile))} color="#10B981" height={60} />
             </div>
           </div>
         )}
@@ -199,6 +283,83 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
               disabled={true}
             />
 
+            {/* V21: AI Mix & Master Controls */}
+            <h3 className="text-studio-red font-montserrat font-semibold text-lg mt-8 mb-4">
+              AI Processing
+            </h3>
+            
+            {/* AI Mix Toggle */}
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-sm font-poppins text-studio-white/80">AI Mix</label>
+              <button
+                onClick={() => setAiMixEnabled(!aiMixEnabled)}
+                className={`w-12 h-6 rounded-full transition-colors ${
+                  aiMixEnabled ? 'bg-studio-red' : 'bg-studio-gray'
+                }`}
+              >
+                <div className={`w-5 h-5 rounded-full bg-white transition-transform ${
+                  aiMixEnabled ? 'translate-x-6' : 'translate-x-0.5'
+                }`} />
+              </button>
+            </div>
+            
+            {aiMixEnabled && (
+              <Slider
+                label="Mix Strength"
+                value={mixStrength}
+                onChange={setMixStrength}
+                min={0}
+                max={1}
+                step={0.1}
+              />
+            )}
+            
+            {/* AI Master Toggle */}
+            <div className="flex items-center justify-between mb-2 mt-4">
+              <label className="text-sm font-poppins text-studio-white/80">AI Master</label>
+              <button
+                onClick={() => setAiMasterEnabled(!aiMasterEnabled)}
+                className={`w-12 h-6 rounded-full transition-colors ${
+                  aiMasterEnabled ? 'bg-studio-red' : 'bg-studio-gray'
+                }`}
+              >
+                <div className={`w-5 h-5 rounded-full bg-white transition-transform ${
+                  aiMasterEnabled ? 'translate-x-6' : 'translate-x-0.5'
+                }`} />
+              </button>
+            </div>
+            
+            {aiMasterEnabled && (
+              <Slider
+                label="Master Strength"
+                value={masterStrength}
+                onChange={setMasterStrength}
+                min={0}
+                max={1}
+                step={0.1}
+              />
+            )}
+            
+            {/* V21: Preset Selection */}
+            <div className="mt-4">
+              <label className="text-sm font-poppins text-studio-white/80 mb-2 block">Preset</label>
+              <div className="grid grid-cols-3 gap-2">
+                {['warm', 'clean', 'bright'].map((preset) => (
+                  <button
+                    key={preset}
+                    onClick={() => setSelectedPreset(preset)}
+                    className={`py-2 px-3 rounded text-xs font-montserrat transition-colors ${
+                      selectedPreset === preset
+                        ? 'bg-studio-red text-white'
+                        : 'bg-studio-gray/30 text-studio-white/60 hover:bg-studio-gray/50'
+                    }`}
+                  >
+                    {preset.charAt(0).toUpperCase() + preset.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <motion.button
               onClick={handleAutoMix}
               disabled={!canMix || analyzing}
@@ -217,7 +378,22 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
             </motion.button>
 
             <motion.button
-              onClick={handleMix}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={mixing}
+              className={`
+                w-full mt-3 py-2 rounded-lg font-montserrat font-semibold text-sm
+                transition-all duration-300 border border-studio-white/20
+                ${!mixing
+                  ? 'bg-studio-gray/30 hover:bg-studio-gray/40 text-studio-white/80'
+                  : 'bg-studio-gray text-studio-white/40 cursor-not-allowed'
+                }
+              `}
+            >
+              {uploadedFile ? `📁 ${uploadedFile.name}` : '📤 Upload Audio File'}
+            </motion.button>
+
+            <motion.button
+              onClick={handleMixAndMaster}
               disabled={!canMix || mixing}
               className={`
                 w-full mt-3 py-4 rounded-lg font-montserrat font-semibold
@@ -250,7 +426,21 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
           </motion.div>
         )}
 
-        {sessionData.mixFile && (
+        {/* V21: Show only processed preview (mixed_mastered.wav) */}
+        {sessionData.mixedFile && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="w-full max-w-4xl p-6 bg-studio-gray/30 rounded-lg border border-studio-white/10"
+          >
+            <p className="text-sm text-studio-white/80 mb-3 font-montserrat">✓ Mix & Master Ready</p>
+            <audio controls src={sessionData.mixedFile} className="w-full mb-3" />
+            <WavesurferPlayer url={sessionData.mixedFile} color="#A855F7" height={120} />
+          </motion.div>
+        )}
+        
+        {/* Keep legacy mixFile/masterFile for backward compatibility, but prioritize mixedFile */}
+        {!sessionData.mixedFile && sessionData.mixFile && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -261,7 +451,7 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
           </motion.div>
         )}
         
-        {sessionData.masterFile && (
+        {!sessionData.mixedFile && sessionData.masterFile && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}

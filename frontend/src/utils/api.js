@@ -220,6 +220,34 @@ export const api = {
     return handleResponse(response);
   },
 
+  // V21: Process mix and master with AI controls
+  processMix: async (sessionId, file, params) => {
+    const formData = new FormData();
+    
+    // Handle file - can be File object or URL string
+    if (file instanceof File) {
+      formData.append('file', file);
+    } else if (typeof file === 'string') {
+      // If it's a URL string, backend will fetch it
+      formData.append('file_url', file);
+    } else {
+      throw new Error('Invalid file provided');
+    }
+    
+    formData.append('session_id', sessionId);
+    formData.append('ai_mix', params.ai_mix || false);
+    formData.append('ai_master', params.ai_master || false);
+    formData.append('mix_strength', params.mix_strength || 0.7);
+    formData.append('master_strength', params.master_strength || 0.8);
+    formData.append('preset', params.preset || 'clean');
+
+    const response = await fetch(`${API_BASE}/mix/process`, {
+      method: 'POST',
+      body: formData,
+    });
+    return handleResponse(response);
+  },
+
 
 
   generateCoverArt: async (title, artist, sessionId) => {
