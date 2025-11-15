@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { api } from '../../utils/api';
+import { handlePaywall } from '../../utils/paywall';
 import StageWrapper from './StageWrapper';
 
-export default function ReleaseStage({ sessionData, updateSessionData, voice, onClose, onNext, sessionId, completeStage }) {
+export default function ReleaseStage({ sessionData, updateSessionData, voice, onClose, onNext, sessionId, completeStage, openUpgradeModal }) {
   // Form inputs
   const [trackTitle, setTrackTitle] = useState(sessionData.trackTitle || sessionData.metadata?.track_title || '');
   const [artistName, setArtistName] = useState(sessionData.artistName || sessionData.metadata?.artist_name || 'NP22');
@@ -152,15 +153,30 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
   const handleGenerateMetadata = async () => {
     setGeneratingMetadata(true);
     try {
-      await api.generateReleaseMetadata(
+      const result = await api.generateReleaseMetadata(
         currentSessionId, trackTitle, artistName, mood, genre, explicit, releaseDate
       );
+      
+      // PHASE 8.4: Check for paywall
+      if (openUpgradeModal && !handlePaywall(result, openUpgradeModal)) {
+        setGeneratingMetadata(false);
+        return;
+      }
       
       // Refresh release pack
       await fetchReleasePack();
       voice.speak("Metadata generated");
     } catch (err) {
       console.error('Metadata generation error:', err);
+      
+      // PHASE 8.4: Check for paywall error
+      if (openUpgradeModal && err.isPaywall && err.errorData) {
+        if (!handlePaywall(err.errorData, openUpgradeModal)) {
+          setGeneratingMetadata(false);
+          return;
+        }
+      }
+      
       voice.speak('Failed to generate metadata');
     } finally {
       setGeneratingMetadata(false);

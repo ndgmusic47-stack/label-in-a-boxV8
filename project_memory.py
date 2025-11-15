@@ -22,11 +22,16 @@ class ProjectMemory:
     - Analytics and metrics
     """
     
-    def __init__(self, session_id: str, media_dir: Path):
+    def __init__(self, session_id: str, media_dir: Path, user_id: Optional[str] = None):
         self.session_id = session_id
+        self.user_id = user_id
         self.media_dir = media_dir
-        self.session_path = media_dir / session_id
-        self.session_path.mkdir(exist_ok=True)
+        if user_id:
+            self.session_path = media_dir / user_id / session_id
+        else:
+            # Backward compatibility: use /media/{session_id}/ if no user_id
+            self.session_path = media_dir / session_id
+        self.session_path.mkdir(parents=True, exist_ok=True)
         self.project_file = self.session_path / "project.json"
         self.project_data = self._load_or_create()
     
@@ -286,9 +291,9 @@ class ProjectMemory:
         
         self.save()
 
-def get_or_create_project_memory(session_id: str, media_dir: Path) -> ProjectMemory:
+def get_or_create_project_memory(session_id: str, media_dir: Path, user_id: Optional[str] = None) -> ProjectMemory:
     """Factory function to get or create project memory"""
-    return ProjectMemory(session_id, media_dir)
+    return ProjectMemory(session_id, media_dir, user_id)
 
 def list_all_projects(media_dir: Path) -> List[Dict]:
     """List all projects with their metadata"""
@@ -312,3 +317,61 @@ def list_all_projects(media_dir: Path) -> List[Dict]:
                     logger.error(f"Error loading project {item.name}: {e}")
     
     return sorted(projects, key=lambda x: x["updated_at"], reverse=True)
+
+def export_project(memory: ProjectMemory) -> Dict:
+    """Export current project data for saving"""
+    return {
+        "stages": memory.project_data.get("workflow", {}),
+        "release": memory.project_data.get("release", {}),
+        "mix": memory.project_data.get("mix", {}),
+        "content": memory.project_data.get("content", {}),
+        "schedule": memory.project_data.get("schedule", {}),
+        "upload": memory.project_data.get("upload", {}),
+        "lyrics": memory.project_data.get("assets", {}).get("lyrics"),
+        "beat": memory.project_data.get("beat", {}),
+        "metadata": memory.project_data.get("metadata", {}),
+        "assets": memory.project_data.get("assets", {}),
+        "workflow_state": memory.project_data.get("workflow_state", {}),
+        "analytics": memory.project_data.get("analytics", {}),
+        "chat_log": memory.project_data.get("chat_log", []),
+        "voice_prompts": memory.project_data.get("voice_prompts", []),
+        "reference_analysis": memory.project_data.get("reference_analysis"),
+    }
+
+def import_project(data: Dict, memory: ProjectMemory):
+    """Import project data into memory instance"""
+    # Update all relevant sections
+    if "stages" in data:
+        memory.project_data["workflow"] = data["stages"]
+    if "release" in data:
+        memory.project_data["release"] = data["release"]
+    if "mix" in data:
+        memory.project_data["mix"] = data["mix"]
+    if "content" in data:
+        memory.project_data["content"] = data["content"]
+    if "schedule" in data:
+        memory.project_data["schedule"] = data["schedule"]
+    if "upload" in data:
+        memory.project_data["upload"] = data["upload"]
+    if "lyrics" in data:
+        if "assets" not in memory.project_data:
+            memory.project_data["assets"] = {}
+        memory.project_data["assets"]["lyrics"] = data["lyrics"]
+    if "beat" in data:
+        memory.project_data["beat"] = data["beat"]
+    if "metadata" in data:
+        memory.project_data["metadata"] = data["metadata"]
+    if "assets" in data:
+        memory.project_data["assets"] = data["assets"]
+    if "workflow_state" in data:
+        memory.project_data["workflow_state"] = data["workflow_state"]
+    if "analytics" in data:
+        memory.project_data["analytics"] = data["analytics"]
+    if "chat_log" in data:
+        memory.project_data["chat_log"] = data["chat_log"]
+    if "voice_prompts" in data:
+        memory.project_data["voice_prompts"] = data["voice_prompts"]
+    if "reference_analysis" in data:
+        memory.project_data["reference_analysis"] = data["reference_analysis"]
+    
+    memory.save()

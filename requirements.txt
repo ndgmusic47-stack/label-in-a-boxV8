@@ -16,3 +16,6 @@ gtts
 python-dotenv
 aubio
 reportlab
+PyJWT
+passlib[bcrypt]
+stripe

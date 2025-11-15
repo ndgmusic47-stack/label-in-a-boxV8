@@ -19,7 +19,7 @@ import logging
 import hashlib
 import zipfile
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, APIRouter, Request, Body, Query
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, APIRouter, Request, Body, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -37,6 +37,8 @@ from cover_art_generator import CoverArtGenerator
 from analytics_engine import AnalyticsEngine
 from social_scheduler import SocialScheduler
 from content import content_router
+from auth import auth_router, get_current_user
+from billing import billing_router
 
 # ============================================================================
 # PHASE 2.2: SHARED UTILITIES
@@ -68,10 +70,14 @@ def error_response(error: str, status_code: int = 400):
         content={"ok": False, "error": error}
     )
 
-# Path compatibility helpers for /media/{session_id}/ migration
-def get_session_media_path(session_id: str) -> Path:
-    """Get media path for session - Phase 2.2 uses /media/{session_id}/"""
-    path = Path("./media") / session_id
+# Path compatibility helpers for /media/{user_id}/{session_id}/ migration (Phase 8.3)
+def get_session_media_path(session_id: str, user_id: Optional[str] = None) -> Path:
+    """Get media path for session - Phase 8.3 uses /media/{user_id}/{session_id}/"""
+    if user_id:
+        path = Path("./media") / user_id / session_id
+    else:
+        # Backward compatibility: use /media/{session_id}/ if no user_id
+        path = Path("./media") / session_id
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -1897,13 +1903,38 @@ async def generate_lyrics_pdf(request: ReleaseRequest):
         return error_response(f"Lyrics PDF generation failed: {str(e)}")
 
 @api.post("/release/metadata")
-async def generate_release_metadata(request: ReleaseMetadataRequest):
+async def generate_release_metadata(request: ReleaseMetadataRequest, current_user: dict = Depends(get_current_user)):
     """Generate metadata.json with track info"""
     session_path = get_session_media_path(request.session_id)
     metadata_dir = session_path / "release" / "metadata"
     metadata_dir.mkdir(parents=True, exist_ok=True)
     
     try:
+        user_id = current_user["user_id"]
+        user_plan = current_user.get("plan", "free")
+        
+        # PHASE 8.4: Free tier limit enforcement - 1 release per 24 hours
+        if user_plan == "free":
+            from database import load_users, save_users
+            users = load_users()
+            user_data = users.get(user_id, {})
+            last_release_timestamp = user_data.get("last_release_timestamp")
+            
+            if last_release_timestamp:
+                last_release_dt = datetime.fromisoformat(last_release_timestamp)
+                time_since_last_release = datetime.now() - last_release_dt
+                hours_since_last = time_since_last_release.total_seconds() / 3600
+                
+                if hours_since_last < 24:
+                    log_endpoint_event("/release/metadata", request.session_id, "upgrade_required", {"user_id": user_id, "limit": "daily_release_limit", "hours_since_last": hours_since_last})
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "ok": False,
+                            "error": "upgrade_required",
+                            "feature": "daily_release_limit"
+                        }
+                    )
         # Get audio duration from mixed/master file
         duration_seconds = 0
         bpm = None
@@ -1958,6 +1989,14 @@ async def generate_release_metadata(request: ReleaseMetadataRequest):
             current_files.append(metadata_url)
         memory.update("release.files", current_files)
         memory.save()
+        
+        # PHASE 8.4: Update last release timestamp for free tier tracking
+        if user_plan == "free":
+            from database import load_users, save_users
+            users = load_users()
+            if user_id in users:
+                users[user_id]["last_release_timestamp"] = datetime.now().isoformat()
+                save_users(users)
         
         log_endpoint_event("/release/metadata", request.session_id, "success", {})
         return success_response(
@@ -2488,28 +2527,33 @@ async def health_check():
     }
 
 @api.get("/projects")
-async def list_projects():
-    """List all projects"""
+async def list_projects(current_user: dict = Depends(get_current_user)):
+    """List all projects (requires authentication)"""
     try:
-        projects = list_all_projects(MEDIA_DIR)
+        user_id = current_user["user_id"]
+        # List projects from user's directory
+        user_media_dir = MEDIA_DIR / user_id
+        projects = list_all_projects(user_media_dir) if user_media_dir.exists() else []
         return {"ok": True, "projects": projects}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 @api.get("/projects/{session_id}")
-async def get_project(session_id: str):
-    """Get a specific project"""
+async def get_project(session_id: str, current_user: dict = Depends(get_current_user)):
+    """Get a specific project (requires authentication)"""
     try:
-        memory = get_or_create_project_memory(session_id, MEDIA_DIR)
+        user_id = current_user["user_id"]
+        memory = get_or_create_project_memory(session_id, MEDIA_DIR, user_id)
         return {"ok": True, "project": memory.project_data}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 @api.post("/projects/{session_id}/advance")
-async def advance_stage(session_id: str):
-    """Advance project stage (called when user completes a stage)"""
+async def advance_stage(session_id: str, current_user: dict = Depends(get_current_user)):
+    """Advance project stage (called when user completes a stage) (requires authentication)"""
     try:
-        memory = get_or_create_project_memory(session_id, MEDIA_DIR)
+        user_id = current_user["user_id"]
+        memory = get_or_create_project_memory(session_id, MEDIA_DIR, user_id)
         current_stage = memory.project_data.get("workflow", {}).get("current_stage", "beat")
         memory.advance_stage(current_stage)
         log_endpoint_event("/projects/{id}/advance", session_id, "success", {"from_stage": current_stage})
@@ -2522,10 +2566,144 @@ async def advance_stage(session_id: str):
         return error_response(f"Failed to advance stage: {str(e)}")
 
 # ============================================================================
+# PHASE 8.3: PROJECT SAVE/LOAD ROUTES
+# ============================================================================
+
+class ProjectSaveRequest(BaseModel):
+    projectId: Optional[str] = None
+    userId: str
+    projectData: dict
+
+class ProjectLoadRequest(BaseModel):
+    projectId: str
+
+@api.post("/projects/save")
+async def save_project(request: ProjectSaveRequest, current_user: dict = Depends(get_current_user)):
+    """Save project data to user's project folder"""
+    try:
+        user_id = current_user["user_id"]
+        user_plan = current_user.get("plan", "free")
+        
+        # Generate projectId if not provided
+        project_id = request.projectId or str(uuid.uuid4())
+        
+        # PHASE 8.4: Free tier limit enforcement - max 1 project
+        if user_plan == "free":
+            projects_dir = Path("./data/projects") / user_id
+            if projects_dir.exists():
+                existing_projects = list(projects_dir.glob("*.json"))
+                # If this is a new project (not updating existing), check limit
+                if not request.projectId and len(existing_projects) >= 1:
+                    log_endpoint_event("/projects/save", project_id, "upgrade_required", {"user_id": user_id, "limit": "multi_project"})
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "ok": False,
+                            "error": "upgrade_required",
+                            "feature": "multi_project"
+                        }
+                    )
+        
+        # Create user's project directory
+        projects_dir = Path("./data/projects") / user_id
+        projects_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save project data
+        project_file = projects_dir / f"{project_id}.json"
+        
+        # Extract name from projectData or use default
+        project_name = request.projectData.get("metadata", {}).get("track_title") or "Untitled Project"
+        
+        project_save_data = {
+            "projectId": project_id,
+            "userId": user_id,
+            "name": project_name,
+            "projectData": request.projectData,
+            "updatedAt": datetime.now().isoformat(),
+            "createdAt": request.projectData.get("created_at", datetime.now().isoformat())
+        }
+        
+        with open(project_file, 'w') as f:
+            json.dump(project_save_data, f, indent=2)
+        
+        log_endpoint_event("/projects/save", project_id, "success", {"user_id": user_id})
+        return success_response(
+            data={"projectId": project_id, "name": project_name},
+            message="Project saved successfully"
+        )
+    except Exception as e:
+        logger.error(f"Failed to save project: {e}")
+        log_endpoint_event("/projects/save", request.projectId or "new", "error", {"error": str(e)})
+        return error_response(f"Failed to save project: {str(e)}")
+
+@api.get("/projects/list")
+async def list_user_projects(current_user: dict = Depends(get_current_user)):
+    """List all projects for the current user"""
+    try:
+        user_id = current_user["user_id"]
+        projects_dir = Path("./data/projects") / user_id
+        
+        projects = []
+        if projects_dir.exists():
+            for project_file in projects_dir.glob("*.json"):
+                try:
+                    with open(project_file, 'r') as f:
+                        data = json.load(f)
+                        projects.append({
+                            "projectId": data.get("projectId", project_file.stem),
+                            "name": data.get("name", "Untitled Project"),
+                            "updatedAt": data.get("updatedAt", "")
+                        })
+                except Exception as e:
+                    logger.error(f"Error loading project {project_file}: {e}")
+        
+        # Sort by updatedAt descending
+        projects.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
+        
+        log_endpoint_event("/projects/list", None, "success", {"user_id": user_id, "count": len(projects)})
+        return success_response(data={"projects": projects}, message="Projects listed successfully")
+    except Exception as e:
+        logger.error(f"Failed to list projects: {e}")
+        log_endpoint_event("/projects/list", None, "error", {"error": str(e)})
+        return error_response(f"Failed to list projects: {str(e)}")
+
+@api.post("/projects/load")
+async def load_project(request: ProjectLoadRequest, current_user: dict = Depends(get_current_user)):
+    """Load a specific project"""
+    try:
+        user_id = current_user["user_id"]
+        project_id = request.projectId
+        
+        projects_dir = Path("./data/projects") / user_id
+        project_file = projects_dir / f"{project_id}.json"
+        
+        if not project_file.exists():
+            return error_response("Project not found", status_code=404)
+        
+        with open(project_file, 'r') as f:
+            data = json.load(f)
+        
+        log_endpoint_event("/projects/load", project_id, "success", {"user_id": user_id})
+        return success_response(
+            data={
+                "projectData": data.get("projectData", {}),
+                "projectId": data.get("projectId", project_id),
+                "name": data.get("name", "Untitled Project")
+            },
+            message="Project loaded successfully"
+        )
+    except Exception as e:
+        logger.error(f"Failed to load project: {e}")
+        log_endpoint_event("/projects/load", request.projectId, "error", {"error": str(e)})
+        return error_response(f"Failed to load project: {str(e)}")
+
+# ============================================================================
 # INCLUDE API ROUTER
 # ============================================================================
 app.include_router(api)
+app.include_router(auth_router)
 app.include_router(content_router)
+app.include_router(billing_router)
 
 # ============================================================================
 # FRONTEND SERVING (MUST BE LAST - AFTER ALL API ROUTES)

@@ -2,12 +2,19 @@
 const API_BASE = '/api';
 
 // Phase 2.2: Helper to handle standardized JSON responses {ok, data, message} or {ok, error}
+// Phase 8.4: Preserve error data for paywall checks
 const handleResponse = async (response) => {
  const result = await response.json();
 
+ // Phase 8.4: Check for paywall errors even if response.ok is true (in case backend returns 403 but ok: false)
  if (!result.ok) {
-   // Surface backend error message or fallback to generic
-   throw new Error(result.error || result.message || 'API request failed');
+   // Phase 8.4: For upgrade_required errors, attach full error data to error object
+   const error = new Error(result.error || result.message || 'API request failed');
+   if (result.error === "upgrade_required") {
+     error.errorData = result;
+     error.isPaywall = true;
+   }
+   throw error;
  }
 
  // Return data directly for easier consumption
@@ -15,6 +22,33 @@ const handleResponse = async (response) => {
 };
 
 export const api = {
+ // ========== AUTHENTICATION ==========
+
+ authMe: async (token) => {
+   const response = await fetch(`${API_BASE}/auth/me`, {
+     headers: { "Authorization": `Bearer ${token}` }
+   });
+   return handleResponse(response);
+ },
+
+ login: async (email, password) => {
+   const response = await fetch(`${API_BASE}/auth/login`, {
+     method: "POST",
+     headers: {"Content-Type": "application/json"},
+     body: JSON.stringify({ email, password })
+   });
+   return handleResponse(response);
+ },
+
+ signup: async (email, password) => {
+   const response = await fetch(`${API_BASE}/auth/signup`, {
+     method: "POST",
+     headers: {"Content-Type": "application/json"},
+     body: JSON.stringify({ email, password })
+   });
+   return handleResponse(response);
+ },
+
  // ========== V4 PROJECT MEMORY ==========
 
  listProjects: async () => {
@@ -337,9 +371,13 @@ export const api = {
   },
 
   generateReleaseMetadata: async (sessionId, trackTitle, artistName, mood, genre, explicit, releaseDate) => {
+    const token = localStorage.getItem('auth_token');
     const response = await fetch(`${API_BASE}/release/metadata`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
       body: JSON.stringify({
         session_id: sessionId,
         track_title: trackTitle,
@@ -659,6 +697,75 @@ export const api = {
    const response = await fetch(`${API_BASE}/projects/${sessionId}/advance`, {
      method: 'POST',
      headers: { 'Content-Type': 'application/json' },
+   });
+   return handleResponse(response);
+ },
+
+ // ========== PROJECT SAVE/LOAD (PHASE 8.3) ==========
+
+ saveProject: async (userId, projectId, projectData) => {
+   const token = localStorage.getItem('auth_token');
+   const response = await fetch(`${API_BASE}/projects/save`, {
+     method: 'POST',
+     headers: { 
+       'Content-Type': 'application/json',
+       'Authorization': `Bearer ${token}`
+     },
+     body: JSON.stringify({
+       userId,
+       projectId: projectId || null,
+       projectData
+     })
+   });
+   return handleResponse(response);
+ },
+
+ listProjects: async () => {
+   const token = localStorage.getItem('auth_token');
+   const response = await fetch(`${API_BASE}/projects/list`, {
+     headers: { 
+       'Authorization': `Bearer ${token}`
+     }
+   });
+   return handleResponse(response);
+ },
+
+ loadProject: async (projectId) => {
+   const token = localStorage.getItem('auth_token');
+   const response = await fetch(`${API_BASE}/projects/load`, {
+     method: 'POST',
+     headers: { 
+       'Content-Type': 'application/json',
+       'Authorization': `Bearer ${token}`
+     },
+     body: JSON.stringify({ projectId })
+   });
+   return handleResponse(response);
+ },
+
+ // ========== BILLING (PHASE 9) ==========
+
+ createCheckoutSession: async (userId, priceId = null) => {
+   const token = localStorage.getItem('auth_token');
+   const response = await fetch(`${API_BASE}/billing/create-checkout-session`, {
+     method: 'POST',
+     headers: { 
+       'Content-Type': 'application/json',
+       'Authorization': `Bearer ${token}`
+     },
+     body: JSON.stringify({ userId, priceId })
+   });
+   return handleResponse(response);
+ },
+
+ createPortalSession: async () => {
+   const token = localStorage.getItem('auth_token');
+   const response = await fetch(`${API_BASE}/billing/portal`, {
+     method: 'POST',
+     headers: { 
+       'Content-Type': 'application/json',
+       'Authorization': `Bearer ${token}`
+     }
    });
    return handleResponse(response);
  },
