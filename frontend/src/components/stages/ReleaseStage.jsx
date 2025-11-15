@@ -1,13 +1,18 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { api } from '../../utils/api';
 import StageWrapper from './StageWrapper';
 
-export default function ReleaseStage({ sessionData, updateSessionData, voice, onClose, sessionId }) {
-  const [artistName, setArtistName] = useState(sessionData.artistName || 'Your Name');
+export default function ReleaseStage({ sessionData, updateSessionData, voice, onClose, sessionId, completeStage }) {
+  const [artistName, setArtistName] = useState(sessionData.artistName || 'NP22');
   const [trackTitle, setTrackTitle] = useState(sessionData.trackTitle || 'My Track');
+  const [genre, setGenre] = useState(sessionData.genre || 'hip hop');
+  const [mood, setMood] = useState(sessionData.mood || 'energetic');
+  const [releaseDate, setReleaseDate] = useState(sessionData.release_date || new Date().toISOString().split('T')[0]);
+  const [lyrics, setLyrics] = useState(sessionData.lyricsData || '');
+  const [isrc, setIsrc] = useState(sessionData.isrc || '');
   const [creating, setCreating] = useState(false);
-  const [packUrl, setPackUrl] = useState(null);
+  const [packUrl, setPackUrl] = useState(sessionData.releasePackUrl || null);
   
   // Check if release pack exists in project assets
   const hasReleasePack = sessionData.releasePack || (sessionData.assets?.release_pack);
@@ -20,13 +25,29 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
   const [coverUrl, setCoverUrl] = useState(sessionData.coverArt || null);
   const [coverPrompt, setCoverPrompt] = useState('');
 
-  const canRelease = sessionData.masterFile;
+  const canRelease = sessionData.mixedFile || sessionData.masterFile;
+
+  // Auto-generate ISRC on mount or when title/artist changes
+  const generateISRC = () => {
+    // Format: USRC1 + 12 digits (country code + registrant code + item code)
+    const timestamp = Date.now().toString().slice(-8);
+    const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+    return `USRC1${timestamp}${random}`;
+  };
+
+  // Initialize ISRC if not present
+  useEffect(() => {
+    if (!isrc && !sessionData.isrc) {
+      const newIsrc = generateISRC();
+      setIsrc(newIsrc);
+    }
+  }, []);
 
   const handleGenerateCover = async () => {
     setGeneratingCover(true);
     
     try {
-      voice.speak(`Generating AI cover art for ${trackTitle}...`);
+      voice.speak("Generating cover art...");
       
       // Generate cover art using backend POST /api/release/generate-cover
       const result = await api.generateCoverArt(
@@ -45,7 +66,7 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
           artistName,
           trackTitle 
         });
-        voice.speak('Cover art generated successfully!');
+        voice.speak("Cover art generated.");
       }
     } catch (err) {
       console.error('Cover art generation error:', err);
@@ -57,29 +78,58 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
 
   const handleCreatePack = async () => {
     if (!canRelease) {
-      voice.speak('You need a master file first');
+      voice.speak('You need a mixed file first');
       return;
     }
 
     setCreating(true);
     
     try {
-      voice.speak(`Generating release pack for ${trackTitle}...`);
+      voice.speak("Preparing your release pack...");
       
-      // Call POST /api/release/pack with session_id
-      const result = await api.createReleasePack(sessionId);
+      // Call POST /api/release/pack with proper payload structure
+      const result = await api.createReleasePack(
+        sessionId,
+        sessionData.mixedFile || sessionData.masterFile,
+        coverUrl,
+        {
+          title: trackTitle,
+          artist: artistName,
+          genre: genre,
+          mood: mood,
+          release_date: releaseDate,
+          isrc: isrc
+        },
+        lyrics
+      );
       
       // After success, call syncProject
       await api.syncProject(sessionId, updateSessionData);
       
-      // Display download link for /media/{session_id}/release_pack.zip
-      const downloadUrl = result.url || `/media/${sessionId}/release_pack.zip`;
+      // Display download link
+      const downloadUrl = result.zip_url || result.url;
       setPackUrl(downloadUrl);
-      updateSessionData({ trackTitle, artistName, genre: coverGenre, mood: coverMood });
-      voice.speak('Your release pack is ready to download!');
+      updateSessionData({ 
+        releasePackUrl: downloadUrl,
+        releaseCompleted: true,
+        trackTitle,
+        artistName,
+        genre,
+        mood,
+        release_date: releaseDate,
+        isrc,
+        lyricsData: lyrics
+      });
+      
+      voice.speak("Your release pack is ready to download.");
+      
+      // Complete the stage
+      if (completeStage) {
+        await completeStage("release");
+      }
     } catch (err) {
       console.error('Release pack creation error:', err);
-      voice.speak('Failed to create release pack. Try again.');
+      voice.speak("I couldn't generate the release pack. Please try again.");
     } finally {
       setCreating(false);
     }
@@ -99,6 +149,16 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
         </div>
 
         <div className="w-full max-w-2xl space-y-6">
+          {/* Preview Mixed Track */}
+          {sessionData.mixedFile && (
+            <div className="space-y-2">
+              <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                Preview Final Mixed Track
+              </label>
+              <audio controls src={sessionData.mixedFile} className="w-full" />
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
@@ -125,6 +185,75 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
                          text-studio-white font-poppins focus:outline-none focus:border-studio-red"
               />
             </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                Genre
+              </label>
+              <input
+                type="text"
+                value={genre}
+                onChange={(e) => setGenre(e.target.value)}
+                className="w-full px-4 py-3 bg-studio-gray/50 border border-studio-white/20 rounded-lg
+                         text-studio-white font-poppins focus:outline-none focus:border-studio-red"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                Mood
+              </label>
+              <input
+                type="text"
+                value={mood}
+                onChange={(e) => setMood(e.target.value)}
+                className="w-full px-4 py-3 bg-studio-gray/50 border border-studio-white/20 rounded-lg
+                         text-studio-white font-poppins focus:outline-none focus:border-studio-red"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                Release Date
+              </label>
+              <input
+                type="date"
+                value={releaseDate}
+                onChange={(e) => setReleaseDate(e.target.value)}
+                className="w-full px-4 py-3 bg-studio-gray/50 border border-studio-white/20 rounded-lg
+                         text-studio-white font-poppins focus:outline-none focus:border-studio-red"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                ISRC
+              </label>
+              <input
+                type="text"
+                value={isrc}
+                onChange={(e) => setIsrc(e.target.value)}
+                className="w-full px-4 py-3 bg-studio-gray/50 border border-studio-white/20 rounded-lg
+                         text-studio-white font-poppins focus:outline-none focus:border-studio-red"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+              Lyrics (Optional)
+            </label>
+            <textarea
+              value={lyrics}
+              onChange={(e) => setLyrics(e.target.value)}
+              rows={4}
+              className="w-full px-4 py-3 bg-studio-gray/50 border border-studio-white/20 rounded-lg
+                       text-studio-white font-poppins focus:outline-none focus:border-studio-red"
+            />
           </div>
 
           {/* AI Cover Art Section */}

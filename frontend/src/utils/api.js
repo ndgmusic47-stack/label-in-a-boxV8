@@ -264,12 +264,16 @@ export const api = {
   },
 
 
- createReleasePack: async (sessionId) => {
+ createReleasePack: async (sessionId, mixedFile, coverFile, metadata, lyrics) => {
    const response = await fetch(`${API_BASE}/release/pack`, {
      method: 'POST',
      headers: { 'Content-Type': 'application/json' },
      body: JSON.stringify({
        session_id: sessionId,
+       mixed_file: mixedFile,
+       cover_file: coverFile,
+       metadata: metadata,
+       lyrics: lyrics || "",
      }),
    });
    return handleResponse(response);

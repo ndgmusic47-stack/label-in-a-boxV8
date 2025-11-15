@@ -148,8 +148,12 @@ class MixRequest(BaseModel):
 
 class ReleaseRequest(BaseModel):
     session_id: str
-    title: str
-    artist: str
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    mixed_file: Optional[str] = None
+    cover_file: Optional[str] = None
+    metadata: Optional[dict] = None
+    lyrics: Optional[str] = ""
 
 class SocialPostRequest(BaseModel):
     session_id: str
@@ -1583,50 +1587,231 @@ async def generate_cover(request: ReleaseRequest):
 
 @api.post("/release/pack")
 async def create_release_pack(request: ReleaseRequest):
-    """Phase 2.2: Create release_pack.zip with master.wav, cover.jpg, metadata.json"""
+    """V22: Create release pack ZIP with mixed.wav, mixed.mp3, cover.jpg, metadata.json, lyrics.txt"""
     session_path = get_session_media_path(request.session_id)
+    release_dir = session_path / "release"
+    release_dir.mkdir(exist_ok=True)
     
     try:
-        # Check files exist
-        master_file = session_path / "master.wav"
-        mix_file = session_path / "mix.wav"
-        cover_file = session_path / "cover.jpg"
+        # Get metadata from request
+        metadata_dict = request.metadata or {}
+        title = metadata_dict.get("title") or request.title or "Untitled"
+        artist = metadata_dict.get("artist") or request.artist or "NP22"
+        genre = metadata_dict.get("genre", "")
+        mood = metadata_dict.get("mood", "")
+        release_date = metadata_dict.get("release_date", datetime.now().isoformat().split('T')[0])
+        isrc = metadata_dict.get("isrc", "")
+        lyrics = request.lyrics or ""
         
-        audio_file = master_file if master_file.exists() else (mix_file if mix_file.exists() else None)
-        if not audio_file:
+        # 1. Download mixed file from URL or use local file
+        mixed_file_path = None
+        if request.mixed_file:
+            # First, try to find local file if it's a relative path
+            if request.mixed_file.startswith("/media/"):
+                # Extract filename from path like /media/session_id/filename
+                parts = request.mixed_file.split("/")
+                if len(parts) >= 4:
+                    local_filename = parts[-1]
+                    local_file = session_path / local_filename
+                    if local_file.exists():
+                        mixed_file_path = release_dir / "mixed.wav"
+                        shutil.copy(local_file, mixed_file_path)
+                        logger.info(f"Copied local mixed file to {mixed_file_path}")
+            
+            # If not found locally, try to download
+            if not mixed_file_path or not mixed_file_path.exists():
+                try:
+                    # Handle both absolute URLs and relative paths
+                    if request.mixed_file.startswith("http"):
+                        mixed_url = request.mixed_file
+                    elif request.mixed_file.startswith("/"):
+                        # Relative path - try local first, then construct URL
+                        local_file = Path("." + request.mixed_file)
+                        if local_file.exists():
+                            mixed_file_path = release_dir / "mixed.wav"
+                            shutil.copy(local_file, mixed_file_path)
+                            logger.info(f"Copied local file from {local_file} to {mixed_file_path}")
+                        else:
+                            mixed_url = f"http://localhost:8000{request.mixed_file}"
+                            mixed_file_path = release_dir / "mixed.wav"
+                            response = requests.get(mixed_url, timeout=60)
+                            response.raise_for_status()
+                            with open(mixed_file_path, 'wb') as f:
+                                f.write(response.content)
+                            logger.info(f"Downloaded mixed file to {mixed_file_path}")
+                    else:
+                        # Try local file first
+                        local_file = session_path / request.mixed_file
+                        if local_file.exists():
+                            mixed_file_path = release_dir / "mixed.wav"
+                            shutil.copy(local_file, mixed_file_path)
+                            logger.info(f"Copied local mixed file to {mixed_file_path}")
+                        else:
+                            mixed_url = f"http://localhost:8000/media/{request.session_id}/{request.mixed_file}"
+                            mixed_file_path = release_dir / "mixed.wav"
+                            response = requests.get(mixed_url, timeout=60)
+                            response.raise_for_status()
+                            with open(mixed_file_path, 'wb') as f:
+                                f.write(response.content)
+                            logger.info(f"Downloaded mixed file to {mixed_file_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to download mixed file from {request.mixed_file}: {e}")
+        
+        # Fallback: Try to find local files
+        if not mixed_file_path or not mixed_file_path.exists():
+            for filename in ["mix.wav", "master.wav", "mixed.wav"]:
+                local_file = session_path / filename
+                if local_file.exists():
+                    mixed_file_path = release_dir / "mixed.wav"
+                    shutil.copy(local_file, mixed_file_path)
+                    logger.info(f"Using fallback local file: {filename}")
+                    break
+        
+        if not mixed_file_path or not mixed_file_path.exists():
             log_endpoint_event("/release/pack", request.session_id, "error", {"error": "No audio file"})
-            return error_response("No master.wav or mix.wav found. Run mix first.")
+            return error_response("No mixed file found. Please ensure you have a mixed/master file.")
         
-        # Create metadata.json
+        # 2. Download cover art from URL or use local file
+        cover_file_path = None
+        if request.cover_file:
+            # First, try to find local file if it's a relative path
+            if request.cover_file.startswith("/media/"):
+                # Extract filename from path like /media/session_id/filename
+                parts = request.cover_file.split("/")
+                if len(parts) >= 4:
+                    local_filename = parts[-1]
+                    local_file = session_path / local_filename
+                    if local_file.exists():
+                        cover_file_path = release_dir / "cover.jpg"
+                        shutil.copy(local_file, cover_file_path)
+                        logger.info(f"Copied local cover art to {cover_file_path}")
+            
+            # If not found locally, try to download
+            if not cover_file_path or not cover_file_path.exists():
+                try:
+                    # Handle both absolute URLs and relative paths
+                    if request.cover_file.startswith("http"):
+                        cover_url = request.cover_file
+                    elif request.cover_file.startswith("/"):
+                        # Relative path - try local first, then construct URL
+                        local_file = Path("." + request.cover_file)
+                        if local_file.exists():
+                            cover_file_path = release_dir / "cover.jpg"
+                            shutil.copy(local_file, cover_file_path)
+                            logger.info(f"Copied local cover from {local_file} to {cover_file_path}")
+                        else:
+                            cover_url = f"http://localhost:8000{request.cover_file}"
+                            cover_file_path = release_dir / "cover.jpg"
+                            response = requests.get(cover_url, timeout=30)
+                            response.raise_for_status()
+                            with open(cover_file_path, 'wb') as f:
+                                f.write(response.content)
+                            logger.info(f"Downloaded cover art to {cover_file_path}")
+                    else:
+                        # Try local file first
+                        local_file = session_path / request.cover_file
+                        if local_file.exists():
+                            cover_file_path = release_dir / "cover.jpg"
+                            shutil.copy(local_file, cover_file_path)
+                            logger.info(f"Copied local cover art to {cover_file_path}")
+                        else:
+                            cover_url = f"http://localhost:8000/media/{request.session_id}/{request.cover_file}"
+                            cover_file_path = release_dir / "cover.jpg"
+                            response = requests.get(cover_url, timeout=30)
+                            response.raise_for_status()
+                            with open(cover_file_path, 'wb') as f:
+                                f.write(response.content)
+                            logger.info(f"Downloaded cover art to {cover_file_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to download cover art from {request.cover_file}: {e}")
+                    # Fallback to local file
+                    local_cover = session_path / "cover.jpg"
+                    if local_cover.exists():
+                        cover_file_path = release_dir / "cover.jpg"
+                        shutil.copy(local_cover, cover_file_path)
+                        logger.info(f"Using fallback local cover art")
+        
+        # 3. Export MP3 using pydub
+        mp3_file_path = release_dir / "mixed.mp3"
+        try:
+            audio = AudioSegment.from_file(str(mixed_file_path))
+            audio.export(str(mp3_file_path), format="mp3", bitrate="320k")
+            logger.info(f"Exported MP3 to {mp3_file_path}")
+        except Exception as e:
+            logger.error(f"Failed to export MP3: {e}")
+            return error_response(f"Failed to export MP3: {str(e)}")
+        
+        # Get audio duration
+        duration_seconds = len(audio) / 1000.0
+        
+        # 4. Generate metadata.json
         memory = get_or_create_project_memory(request.session_id, MEDIA_DIR)
+        bpm = memory.project_data.get("metadata", {}).get("tempo") or memory.project_data.get("beat", {}).get("tempo")
+        
         metadata = {
-            "title": request.title,
-            "artist": request.artist,
-            "date": datetime.now().isoformat(),
-            "bpm": memory.project_data.get("metadata", {}).get("tempo"),
-            "key": memory.project_data.get("metadata", {}).get("key"),
-            "genre": memory.project_data.get("metadata", {}).get("genre"),
-            "mood": memory.project_data.get("metadata", {}).get("mood")
+            "title": title,
+            "artist": artist,
+            "isrc": isrc,
+            "genre": genre,
+            "mood": mood,
+            "release_date": release_date,
+            "duration_seconds": duration_seconds,
+            "bpm": bpm
         }
         
-        metadata_file = session_path / "metadata.json"
+        metadata_file = release_dir / "metadata.json"
         with open(metadata_file, 'w') as f:
             json.dump(metadata, f, indent=2)
         
-        # Create ZIP
-        zip_file = session_path / "release_pack.zip"
-        with zipfile.ZipFile(zip_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.write(audio_file, audio_file.name)
-            if cover_file.exists():
-                zf.write(cover_file, cover_file.name)
-            zf.write(metadata_file, metadata_file.name)
+        # 5. Generate lyrics.txt
+        lyrics_file = release_dir / "lyrics.txt"
+        with open(lyrics_file, 'w', encoding='utf-8') as f:
+            f.write(lyrics)
         
-        # Update project memory
+        # 6. Assemble ZIP file
+        zip_file = release_dir / "release_pack.zip"
+        with zipfile.ZipFile(zip_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Add mixed.wav
+            zf.write(mixed_file_path, "mixed.wav")
+            # Add mixed.mp3
+            zf.write(mp3_file_path, "mixed.mp3")
+            # Add cover.jpg if exists
+            if cover_file_path and cover_file_path.exists():
+                zf.write(cover_file_path, "cover.jpg")
+            # Add metadata.json
+            zf.write(metadata_file, "metadata.json")
+            # Add lyrics.txt
+            zf.write(lyrics_file, "lyrics.txt")
+        
+        zip_url = f"/media/{request.session_id}/release/release_pack.zip"
+        
+        # 7. Update ProjectMemory
+        memory.update_metadata(
+            track_title=title,
+            artist_name=artist,
+            genre=genre,
+            mood=mood
+        )
+        memory.add_asset("release_pack", zip_url, {
+            "title": title,
+            "artist": artist,
+            "isrc": isrc,
+            "release_date": release_date,
+            "created_at": datetime.now().isoformat()
+        })
+        if cover_file_path and cover_file_path.exists():
+            cover_url = f"/media/{request.session_id}/release/cover.jpg"
+            memory.add_asset("cover_art", cover_url, {
+                "title": title,
+                "artist": artist,
+                "created_at": datetime.now().isoformat()
+            })
+        
         memory.advance_stage("release", "content")
         
-        log_endpoint_event("/release/pack", request.session_id, "success", {"title": request.title})
+        log_endpoint_event("/release/pack", request.session_id, "success", {"title": title})
         return success_response(
-            data={"url": f"/media/{request.session_id}/release_pack.zip"},
+            data={"zip_url": zip_url, "url": zip_url},
             message="Release pack created successfully"
         )
     
