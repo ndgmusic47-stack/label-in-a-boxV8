@@ -119,9 +119,10 @@ api = APIRouter(prefix="/api")
 # ============================================================================
 
 class BeatRequest(BaseModel):
+    prompt: Optional[str] = Field(default=None, description="User description of the beat")
     mood: Optional[str] = Field(default="energetic", description="Mood/vibe")
     genre: Optional[str] = Field(default="hip-hop", description="Music genre")
-    bpm: Optional[int] = Field(default=120, description="Beats per minute (tempo)")
+    bpm: Optional[int] = Field(default=None, description="Beats per minute (tempo) - AI-determined if not provided")
     duration_sec: Optional[int] = Field(default=None, description="Duration in seconds (AI-determined if not provided)")
     session_id: Optional[str] = Field(default=None, description="Session ID")
     
@@ -237,17 +238,19 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
         request = BeatRequest()
     
     # Build job object with safe defaults - handle None values
+    prompt = request.prompt or ""
     mood = request.mood or "energetic"
     genre = request.genre or "hip-hop"
-    # Use tempo if provided, otherwise bpm, otherwise default
-    bpm = request.tempo or request.bpm or 120
+    # Use tempo if provided, otherwise bpm, but don't default to 120 - let AI determine
+    bpm = request.tempo or request.bpm
     # Check if duration was explicitly provided (not using default)
     duration_provided = request.duration is not None or request.duration_sec is not None
     duration_sec = request.duration or request.duration_sec
     session_id = request.session_id or str(uuid.uuid4())
     
-    # Ensure reasonable bounds for bpm
-    bpm = max(60, min(200, bpm))
+    # Only enforce bounds on bpm if it was provided
+    if bpm is not None:
+        bpm = max(60, min(200, bpm))
     # Only enforce bounds on duration if it was provided
     if duration_provided and duration_sec is not None:
         duration_sec = max(10, min(300, duration_sec))
@@ -255,20 +258,11 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
     session_path = get_session_media_path(session_id)
     
     if duration_provided and duration_sec is not None:
-        logger.info(f"🎵 Beat creation request: mood={mood}, genre={genre}, bpm={bpm}, duration={duration_sec}s, session={session_id}")
+        logger.info(f"🎵 Beat creation request: prompt={prompt[:50]}..., mood={mood}, genre={genre}, bpm={bpm or 'AI-determined'}, duration={duration_sec}s, session={session_id}")
     else:
-        logger.info(f"🎵 Beat creation request: mood={mood}, genre={genre}, bpm={bpm}, duration=AI-determined, session={session_id}")
+        logger.info(f"🎵 Beat creation request: prompt={prompt[:50]}..., mood={mood}, genre={genre}, bpm={bpm or 'AI-determined'}, duration=AI-determined, session={session_id}")
     
     api_key = os.getenv("BEATOVEN_API_KEY")
-    
-    # Build job object for Beatoven API - only include duration if provided
-    job = {
-        "mood": mood,
-        "genre": genre,
-        "tempo": bpm,
-    }
-    if duration_provided and duration_sec is not None:
-        job["duration"] = duration_sec
     
     # Try Beatoven API first if key available
     if api_key:
@@ -278,11 +272,24 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
                 "Content-Type": "application/json"
             }
             
-            # Step 1: Start composition with validated payload
-            if duration_provided and duration_sec is not None:
-                prompt_text = f"{duration_sec} seconds {mood} {genre} instrumental track"
+            # Step 1: Build prompt text from user prompt, mood, and genre
+            # If user provided a prompt, use it as the base, otherwise build from mood/genre
+            if prompt:
+                # Use user's prompt as the primary description
+                prompt_text = prompt
+                # Optionally append mood/genre if they add context
+                if mood and mood != "energetic":
+                    prompt_text += f", {mood} mood"
+                if genre and genre != "hip-hop":
+                    prompt_text += f", {genre} style"
             else:
+                # Fallback: build from mood and genre
                 prompt_text = f"{mood} {genre} instrumental track"
+            
+            # Add duration to prompt if provided
+            if duration_provided and duration_sec is not None:
+                prompt_text = f"{duration_sec} seconds {prompt_text}"
+            
             payload = {"prompt": {"text": prompt_text}, "format": "mp3", "looping": False}
             
             logger.info(f"🎵 Beatoven job started: {prompt_text}")
@@ -347,10 +354,26 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
                     
                     logger.info(f"🎵 Beatoven track ready: {output_file}")
                     
+                    # Extract metadata from Beatoven response
+                    extracted_metadata = {}
+                    if meta.get("duration"):
+                        extracted_metadata["duration"] = int(meta.get("duration"))
+                    elif meta.get("length"):
+                        extracted_metadata["duration"] = int(meta.get("length"))
+                    
+                    # BPM from meta or use provided/calculated bpm
+                    extracted_bpm = meta.get("bpm") or meta.get("tempo") or bpm
+                    if extracted_bpm:
+                        extracted_metadata["bpm"] = int(extracted_bpm) if isinstance(extracted_bpm, (int, float)) else extracted_bpm
+                    
+                    # Key from meta
+                    if meta.get("key"):
+                        extracted_metadata["key"] = meta.get("key")
+                    
                     # Update project memory
                     memory = get_or_create_project_memory(session_id, MEDIA_DIR)
-                    memory.update_metadata(tempo=bpm, mood=mood, genre=genre)
-                    memory.add_asset("beat", f"/media/{session_id}/beat.mp3", {"bpm": bpm, "mood": mood})
+                    memory.update_metadata(tempo=extracted_bpm, mood=mood, genre=genre)
+                    memory.add_asset("beat", f"/media/{session_id}/beat.mp3", {"bpm": extracted_bpm, "mood": mood, "metadata": extracted_metadata})
                     memory.advance_stage("beat", "lyrics")
                     
                     log_endpoint_event("/beats/create", session_id, "success", {"source": "beatoven", "mood": mood})
@@ -359,7 +382,8 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
                             "session_id": session_id,
                             "url": f"/media/{session_id}/beat.mp3",
                             "beat_url": f"/media/{session_id}/beat.mp3",
-                            "status": "ready"
+                            "status": "ready",
+                            "metadata": extracted_metadata
                         },
                         message="Beat generated successfully via Beatoven"
                     )
@@ -405,8 +429,10 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
         
         # Update project memory
         memory = get_or_create_project_memory(session_id, MEDIA_DIR)
-        memory.update_metadata(tempo=bpm, mood=mood, genre=genre)
-        memory.add_asset("beat", f"/media/{session_id}/beat.mp3", {"bpm": bpm, "mood": mood, "source": "demo"})
+        # For demo beats, use default metadata
+        demo_metadata = {"duration": 60, "bpm": bpm or 120, "key": "C"}
+        memory.update_metadata(tempo=bpm or 120, mood=mood, genre=genre)
+        memory.add_asset("beat", f"/media/{session_id}/beat.mp3", {"bpm": bpm or 120, "mood": mood, "source": "demo", "metadata": demo_metadata})
         memory.advance_stage("beat", "lyrics")
         
         log_endpoint_event("/beats/create", session_id, "success", {"source": "demo", "mood": mood})
@@ -415,7 +441,8 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
                 "session_id": session_id,
                 "url": f"/media/{session_id}/beat.mp3",
                 "beat_url": f"/media/{session_id}/beat.mp3",
-                "status": "ready"
+                "status": "ready",
+                "metadata": demo_metadata
             },
             message="Beatoven unavailable, using fallback demo beat"
         )
@@ -429,8 +456,9 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
             silent_audio.export(str(output_file), format="mp3")
             
             memory = get_or_create_project_memory(session_id, MEDIA_DIR)
-            memory.update_metadata(tempo=bpm, mood=mood, genre=genre)
-            memory.add_asset("beat", f"/media/{session_id}/beat.mp3", {"bpm": bpm, "mood": mood, "source": "silent_fallback"})
+            silent_metadata = {"duration": duration_sec or 60, "bpm": bpm or 120, "key": "C"}
+            memory.update_metadata(tempo=bpm or 120, mood=mood, genre=genre)
+            memory.add_asset("beat", f"/media/{session_id}/beat.mp3", {"bpm": bpm or 120, "mood": mood, "source": "silent_fallback", "metadata": silent_metadata})
             
             log_endpoint_event("/beats/create", session_id, "success", {"source": "silent_fallback", "mood": mood})
             return success_response(
@@ -438,7 +466,8 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
                     "session_id": session_id,
                     "url": f"/media/{session_id}/beat.mp3",
                     "beat_url": f"/media/{session_id}/beat.mp3",
-                    "status": "ready"
+                    "status": "ready",
+                    "metadata": silent_metadata
                 },
                 message="Beat created (fallback mode)"
             )
@@ -454,6 +483,65 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
                 },
                 message="Beat generation attempted (check logs for details)"
             )
+
+# ============================================================================
+# 1.1. GET /beats/credits - GET BEATOVEN CREDITS
+# ============================================================================
+
+@api.get("/beats/credits")
+async def get_beat_credits():
+    """Get remaining credits from Beatoven API"""
+    api_key = os.getenv("BEATOVEN_API_KEY")
+    
+    if not api_key:
+        # Return default credits if API key not configured
+        log_endpoint_event("/beats/credits", None, "success", {"credits": 10, "source": "default"})
+        return success_response(
+            data={"credits": 10},
+            message="Credits retrieved (default - API key not configured)"
+        )
+    
+    try:
+        # Try to get credits from Beatoven API
+        # Note: Beatoven API may not have a direct credits endpoint
+        # This is a placeholder that checks if API key is valid
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Check if Beatoven has a usage/credits endpoint
+        # For now, return a default value since Beatoven API documentation
+        # doesn't clearly specify a credits endpoint
+        # In production, this should call the actual Beatoven credits API if available
+        credits_url = "https://public-api.beatoven.ai/api/v1/usage"
+        try:
+            credits_res = requests.get(credits_url, headers=headers, timeout=10)
+            if credits_res.ok:
+                credits_data = credits_res.json()
+                credits = credits_data.get("credits", credits_data.get("remaining", 10))
+                log_endpoint_event("/beats/credits", None, "success", {"credits": credits, "source": "beatoven"})
+                return success_response(
+                    data={"credits": credits},
+                    message="Credits retrieved from Beatoven"
+                )
+        except:
+            pass
+        
+        # Fallback: return default credits
+        log_endpoint_event("/beats/credits", None, "success", {"credits": 10, "source": "fallback"})
+        return success_response(
+            data={"credits": 10},
+            message="Credits retrieved (fallback - Beatoven credits API not available)"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to get Beatoven credits: {e}")
+        log_endpoint_event("/beats/credits", None, "error", {"error": str(e)})
+        # Return default credits on error
+        return success_response(
+            data={"credits": 10},
+            message="Credits retrieved (default - error occurred)"
+        )
 
 # ============================================================================
 # 2. POST /songs/write - OPENAI TEXT ONLY (NO TTS)
@@ -1194,6 +1282,22 @@ async def get_project(session_id: str):
         return {"ok": True, "project": memory.project_data}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+@api.post("/projects/{session_id}/advance")
+async def advance_stage(session_id: str):
+    """Advance project stage (called when user completes a stage)"""
+    try:
+        memory = get_or_create_project_memory(session_id, MEDIA_DIR)
+        current_stage = memory.project_data.get("workflow", {}).get("current_stage", "beat")
+        memory.advance_stage(current_stage)
+        log_endpoint_event("/projects/{id}/advance", session_id, "success", {"from_stage": current_stage})
+        return success_response(
+            data={"current_stage": memory.project_data.get("workflow", {}).get("current_stage")},
+            message="Stage advanced successfully"
+        )
+    except Exception as e:
+        log_endpoint_event("/projects/{id}/advance", session_id, "error", {"error": str(e)})
+        return error_response(f"Failed to advance stage: {str(e)}")
 
 # ============================================================================
 # INCLUDE API ROUTER

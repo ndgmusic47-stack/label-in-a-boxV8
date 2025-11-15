@@ -114,22 +114,23 @@ export const api = {
 
  // ========== EXISTING ENDPOINTS ==========
 
- createBeat: async (mood, genre = 'hip hop', bpm = 120, duration_sec = null, sessionId = null) => {
+ createBeat: async (promptText, mood, genre = 'hip hop', sessionId = null) => {
    const body = {
+     prompt: promptText,
      mood,
      genre,
-     bpm,
      session_id: sessionId,
    };
-   // Only include duration_sec if provided
-   if (duration_sec !== null && duration_sec !== undefined) {
-     body.duration_sec = duration_sec;
-   }
    const response = await fetch(`${API_BASE}/beats/create`, {
      method: 'POST',
      headers: { 'Content-Type': 'application/json' },
      body: JSON.stringify(body),
    });
+   return handleResponse(response);
+ },
+
+ getBeatCredits: async () => {
+   const response = await fetch(`${API_BASE}/beats/credits`);
    return handleResponse(response);
  },
 
@@ -393,5 +394,15 @@ export const api = {
      console.error('Failed to sync project:', err);
      throw err;
    }
+ },
+
+ // ========== ADVANCE STAGE ==========
+ 
+ advanceStage: async (sessionId) => {
+   const response = await fetch(`${API_BASE}/projects/${sessionId}/advance`, {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json' },
+   });
+   return handleResponse(response);
  },
 };
