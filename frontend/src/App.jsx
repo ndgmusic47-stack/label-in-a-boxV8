@@ -18,6 +18,7 @@ import './styles/ErrorBoundary.css';
 
 function App() {
   const [activeStage, setActiveStage] = useState(null);
+  const [isStageOpen, setIsStageOpen] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [currentStage, setCurrentStage] = useState('beat');
   const [completedStages, setCompletedStages] = useState([]);
@@ -90,16 +91,19 @@ function App() {
 
   const handleStageClick = (stageId) => {
     setActiveStage(stageId);
+    setIsStageOpen(true);
     window.scrollTo({ top: 0, behavior: 'instant' });
     voice.stopSpeaking();
   };
 
   const handleClose = () => {
     setActiveStage(null);
+    setIsStageOpen(false);
   };
 
   const handleBackToTimeline = () => {
     setActiveStage(null);
+    setIsStageOpen(false);
   };
 
   const handleAnalyticsClose = () => {
@@ -145,11 +149,12 @@ function App() {
     <div className="app-root">
       <MistLayer activeStage={activeStage || currentStage} />
 
-      {!showAnalytics && (
+      {!showAnalytics && !isStageOpen && (
         <div className="timeline-centered">
           <Timeline
             ref={timelineRef}
             currentStage={currentStage}
+            activeStage={activeStage}
             completedStages={completedStages}
             onStageClick={handleStageClick}
             showBackButton={!!activeStage}
@@ -158,7 +163,7 @@ function App() {
         </div>
       )}
 
-      <main className="stage-screen">
+      <main className={`stage-screen ${isStageOpen ? 'fullscreen' : ''}`}>
         <ErrorBoundary onReset={() => setActiveStage(null)}>
           {renderStage()}
         </ErrorBoundary>

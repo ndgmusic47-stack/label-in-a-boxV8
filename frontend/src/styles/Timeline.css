@@ -133,16 +133,15 @@
   display: block;
 }
 
-.timeline-progress-bar {
+.timeline-baseline {
   position: absolute;
   top: 50%;
   left: 0;
-  height: 4px;
-  background: linear-gradient(90deg, #FFB800, #FF6B35);
-  border-radius: 2px;
-  transform: translateY(-50%);
-  z-index: 1;
   width: 100%;
+  height: 4px;
+  background: rgba(244,244,244,0.3);
+  z-index: 1;
+  transform: translateY(-50%);
 }
 
 .pulse-ring {

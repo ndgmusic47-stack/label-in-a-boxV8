@@ -114,17 +114,21 @@ export const api = {
 
  // ========== EXISTING ENDPOINTS ==========
 
- createBeat: async (mood, genre = 'hip hop', bpm = 120, duration_sec = 30, sessionId = null) => {
+ createBeat: async (mood, genre = 'hip hop', bpm = 120, duration_sec = null, sessionId = null) => {
+   const body = {
+     mood,
+     genre,
+     bpm,
+     session_id: sessionId,
+   };
+   // Only include duration_sec if provided
+   if (duration_sec !== null && duration_sec !== undefined) {
+     body.duration_sec = duration_sec;
+   }
    const response = await fetch(`${API_BASE}/beats/create`, {
      method: 'POST',
      headers: { 'Content-Type': 'application/json' },
-     body: JSON.stringify({
-       mood,
-       genre,
-       bpm,
-       duration_sec,
-       session_id: sessionId,
-     }),
+     body: JSON.stringify(body),
    });
    return handleResponse(response);
  },

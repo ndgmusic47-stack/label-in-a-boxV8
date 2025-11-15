@@ -17,7 +17,7 @@ export default function BeatStage({ sessionId, sessionData, updateSessionData, v
       voice.speak(`Creating a ${mood} beat for you...`);
       
       // Call beat creation API with correct format
-      const result = await api.createBeat(mood, sessionData.genre || 'hip hop', 120, 30, sessionId);
+      const result = await api.createBeat(mood, sessionData.genre || 'hip hop', 120, null, sessionId);
       
       // Sync with backend project state
       await api.syncProject(sessionId, updateSessionData);

@@ -2,7 +2,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useState, useEffect, forwardRef } from 'react';
 import '../styles/Timeline.css';
 
-const Timeline = forwardRef(({ currentStage, completedStages = [], onStageClick, showBackButton, onBackToTimeline }, ref) => {
+const Timeline = forwardRef(({ currentStage, activeStage, completedStages = [], onStageClick, showBackButton, onBackToTimeline }, ref) => {
   const [showGoalModal, setShowGoalModal] = useState(false);
   
   const stages = [
@@ -74,16 +74,11 @@ const Timeline = forwardRef(({ currentStage, completedStages = [], onStageClick,
           <p className="stage-prompt">{getStagePrompt()}</p>
         </div>
 
-        <motion.div 
-          className="timeline-progress-bar"
-          initial={{ width: 0 }}
-          animate={{ width: `${progressPercentage}%` }}
-          transition={{ duration: 0.8, ease: 'easeOut' }}
-        />
+        <div className="timeline-baseline"></div>
         
         {stages.map((stage, index) => {
           const status = getStageStatus(stage.id);
-          const isActive = status === 'active';
+          const isActive = activeStage === stage.id || status === 'active';
           const isCompleted = status === 'completed';
           
           return (

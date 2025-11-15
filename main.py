@@ -122,7 +122,7 @@ class BeatRequest(BaseModel):
     mood: Optional[str] = Field(default="energetic", description="Mood/vibe")
     genre: Optional[str] = Field(default="hip-hop", description="Music genre")
     bpm: Optional[int] = Field(default=120, description="Beats per minute (tempo)")
-    duration_sec: Optional[int] = Field(default=60, description="Duration in seconds")
+    duration_sec: Optional[int] = Field(default=None, description="Duration in seconds (AI-determined if not provided)")
     session_id: Optional[str] = Field(default=None, description="Session ID")
     
     # Aliases for compatibility
@@ -241,27 +241,34 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
     genre = request.genre or "hip-hop"
     # Use tempo if provided, otherwise bpm, otherwise default
     bpm = request.tempo or request.bpm or 120
-    # Use duration if provided, otherwise duration_sec, otherwise default
-    duration_sec = request.duration or request.duration_sec or 60
+    # Check if duration was explicitly provided (not using default)
+    duration_provided = request.duration is not None or request.duration_sec is not None
+    duration_sec = request.duration or request.duration_sec
     session_id = request.session_id or str(uuid.uuid4())
     
-    # Ensure reasonable bounds
+    # Ensure reasonable bounds for bpm
     bpm = max(60, min(200, bpm))
-    duration_sec = max(10, min(300, duration_sec))
+    # Only enforce bounds on duration if it was provided
+    if duration_provided and duration_sec is not None:
+        duration_sec = max(10, min(300, duration_sec))
     
     session_path = get_session_media_path(session_id)
     
-    logger.info(f"🎵 Beat creation request: mood={mood}, genre={genre}, bpm={bpm}, duration={duration_sec}s, session={session_id}")
+    if duration_provided and duration_sec is not None:
+        logger.info(f"🎵 Beat creation request: mood={mood}, genre={genre}, bpm={bpm}, duration={duration_sec}s, session={session_id}")
+    else:
+        logger.info(f"🎵 Beat creation request: mood={mood}, genre={genre}, bpm={bpm}, duration=AI-determined, session={session_id}")
     
     api_key = os.getenv("BEATOVEN_API_KEY")
     
-    # Build job object for Beatoven API
+    # Build job object for Beatoven API - only include duration if provided
     job = {
         "mood": mood,
         "genre": genre,
-        "duration": duration_sec,
         "tempo": bpm,
     }
+    if duration_provided and duration_sec is not None:
+        job["duration"] = duration_sec
     
     # Try Beatoven API first if key available
     if api_key:
@@ -272,7 +279,10 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
             }
             
             # Step 1: Start composition with validated payload
-            prompt_text = f"{duration_sec} seconds {mood} {genre} instrumental track"
+            if duration_provided and duration_sec is not None:
+                prompt_text = f"{duration_sec} seconds {mood} {genre} instrumental track"
+            else:
+                prompt_text = f"{mood} {genre} instrumental track"
             payload = {"prompt": {"text": prompt_text}, "format": "mp3", "looping": False}
             
             logger.info(f"🎵 Beatoven job started: {prompt_text}")

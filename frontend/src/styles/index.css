@@ -141,6 +141,18 @@ body {
     z-index: 5;
 }
 
+/* Fullscreen stage-screen when stage is open */
+.stage-screen.fullscreen {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 2rem;
+    z-index: 10; /* below VoiceControl, above MistLayer */
+}
+
 /* Stage Wrapper - Simple container */
 .stage-wrapper {
   width: 100%;
