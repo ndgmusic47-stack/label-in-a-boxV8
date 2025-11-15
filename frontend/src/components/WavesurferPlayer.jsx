@@ -13,6 +13,24 @@ export default function WavesurferPlayer({ url, height = 80, color = '#EF4444', 
   useEffect(() => {
     if (!url || !containerRef.current) return;
 
+    // V24: Destroy existing instance before creating new one
+    if (wavesurferRef.current) {
+      try {
+        wavesurferRef.current.destroy();
+      } catch (e) {
+        console.warn('Error destroying wavesurfer:', e);
+      }
+      wavesurferRef.current = null;
+    }
+
+    // Reset state
+    setLoading(true);
+    setError(null);
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+
+    // V24: Create new instance only after URL is available
     const wavesurfer = WaveSurfer.create({
       container: containerRef.current,
       waveColor: `${color}40`,
@@ -46,10 +64,19 @@ export default function WavesurferPlayer({ url, height = 80, color = '#EF4444', 
       setLoading(false);
     });
 
+    // V24: Load URL after instance is ready
     wavesurfer.load(url);
 
+    // V24: Cleanup on unmount or URL change
     return () => {
-      wavesurfer.destroy();
+      if (wavesurferRef.current) {
+        try {
+          wavesurferRef.current.destroy();
+        } catch (e) {
+          console.warn('Error destroying wavesurfer in cleanup:', e);
+        }
+        wavesurferRef.current = null;
+      }
     };
   }, [url, height, color, onReady]);
 

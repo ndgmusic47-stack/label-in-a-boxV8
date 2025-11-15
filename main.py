@@ -1277,9 +1277,17 @@ async def mix_process(
     ai_master: bool = Form(True),
     mix_strength: float = Form(0.7),
     master_strength: float = Form(0.8),
-    preset: str = Form("clean")
+    preset: str = Form("clean"),
+    # V25: EQ parameters (slider values -6 to +6 dB)
+    eq_low: float = Form(0.0),
+    eq_mid: float = Form(0.0),
+    eq_high: float = Form(0.0),
+    # V25: FX parameters
+    compression: float = Form(0.5),
+    reverb: float = Form(0.3),
+    limiter: float = Form(0.8)
 ):
-    """V21: Process single audio file with AI mix & master DSP chain"""
+    """V25: Process single audio file with REAL DSP chain (EQ, Compression, Reverb, Limiter, Mastering)"""
     session_path = get_session_media_path(session_id)
     mix_dir = session_path / "mix"
     mix_dir.mkdir(exist_ok=True, parents=True)
@@ -1362,141 +1370,114 @@ async def mix_process(
         
         logger.info(f"🎧 Processing audio: {len(audio)}ms, sample_rate={audio.frame_rate}")
         
-        # V21: DSP Pipeline - AI Mix
-        processed_audio = audio
-        if ai_mix:
-            # High-pass filter @ 30 Hz
-            processed_audio = high_pass_filter(processed_audio, cutoff=30)
-            
-            # Compression (ratio scaled by mix_strength: 0.7 strength = ratio ~3.5, 1.0 = ratio ~5.0)
-            compression_ratio = 2.0 + (mix_strength * 3.0)  # Range: 2.0-5.0
-            threshold = -20.0 - (mix_strength * 5.0)  # Range: -25 to -20 dB
-            processed_audio = compress_dynamic_range(
-                processed_audio,
-                threshold=threshold,
-                ratio=compression_ratio,
-                attack=5.0,
-                release=50.0
-            )
-            
-            # EQ mid cut (-1 to -3 dB based on strength)
-            mid_cut_db = -1.0 - (mix_strength * 2.0)  # Range: -1 to -3 dB
-            # Apply mid cut using simple gain reduction (pydub limitation)
-            processed_audio = processed_audio + (mid_cut_db * 0.1)
-            
-            # V21: Preset filters
-            if preset == "warm":
-                # +1.5 dB low shelf @ 150 Hz using ffmpeg
-                temp_file = mix_dir / f"temp_warm_{uuid.uuid4().hex[:8]}.wav"
-                processed_audio.export(str(temp_file), format="wav")
-                cmd = [
-                    'ffmpeg', '-i', str(temp_file),
-                    '-af', f'equalizer=f=150:width_type=h:width=100:g=1.5',
-                    '-y', str(output_file)
-                ]
-                try:
-                    subprocess.run(cmd, capture_output=True, check=True, timeout=60)
-                    processed_audio = AudioSegment.from_file(str(output_file))
-                    temp_file.unlink()
-                except Exception as e:
-                    logger.warning(f"FFmpeg warm filter failed, using pydub fallback: {e}")
-                    processed_audio = processed_audio + 1.5  # Simple boost
-                    if temp_file.exists():
-                        temp_file.unlink()
-            
-            elif preset == "bright":
-                # +2 dB high shelf @ 10 kHz using ffmpeg
-                temp_file = mix_dir / f"temp_bright_{uuid.uuid4().hex[:8]}.wav"
-                processed_audio.export(str(temp_file), format="wav")
-                cmd = [
-                    'ffmpeg', '-i', str(temp_file),
-                    '-af', f'equalizer=f=10000:width_type=h:width=5000:g=2.0',
-                    '-y', str(output_file)
-                ]
-                try:
-                    subprocess.run(cmd, capture_output=True, check=True, timeout=60)
-                    processed_audio = AudioSegment.from_file(str(output_file))
-                    temp_file.unlink()
-                except Exception as e:
-                    logger.warning(f"FFmpeg bright filter failed, using pydub fallback: {e}")
-                    processed_audio = processed_audio + 2.0  # Simple boost
-                    if temp_file.exists():
-                        temp_file.unlink()
-            
-            elif preset == "clean":
-                # HPF @ 40 Hz + slight mid dip
-                processed_audio = high_pass_filter(processed_audio, cutoff=40)
-                processed_audio = processed_audio - 1.0  # Slight mid dip
+        # V25: Validate DSP parameters
+        eq_low_gain = max(-6.0, min(6.0, eq_low))
+        eq_mid_gain = max(-6.0, min(6.0, eq_mid))
+        eq_high_gain = max(-6.0, min(6.0, eq_high))
+        compression_val = max(0.0, min(1.0, compression))
+        reverb_val = max(0.0, min(1.0, reverb))
+        limiter_val = max(0.0, min(1.0, limiter))
         
-        # V21: DSP Pipeline - AI Master
+        # V25: Apply preset overrides if preset is selected
+        if preset == "warm":
+            eq_low_gain = 2.0
+            eq_mid_gain = -1.0
+            eq_high_gain = 1.0
+            reverb_val = 0.3  # light reverb
+            compression_val = 0.6  # medium compression
+            limiter_val = 0.7  # soft limiter
+        elif preset == "clean":
+            eq_low_gain = 0.0
+            eq_mid_gain = -2.0
+            eq_high_gain = 0.0
+            reverb_val = 0.0  # no reverb
+            compression_val = 0.3  # low compression
+            limiter_val = 0.0  # no limiter
+        elif preset == "bright":
+            eq_low_gain = 0.0
+            eq_mid_gain = -1.0
+            eq_high_gain = 3.0
+            reverb_val = 0.0  # no reverb
+            compression_val = 0.6  # medium compression
+            limiter_val = 0.5  # medium limiter
+        
+        # V25: REAL DSP PIPELINE using ffmpeg filters
+        # Build filter chain as single ffmpeg command
+        
+        # Stage 1: EQ (3-band)
+        eq_filters = []
+        if abs(eq_low_gain) > 0.1:
+            eq_filters.append(f"equalizer=f=100:t=lowshelf:g={eq_low_gain}")
+        if abs(eq_mid_gain) > 0.1:
+            eq_filters.append(f"equalizer=f=1500:t=peak:g={eq_mid_gain}:width=2")
+        if abs(eq_high_gain) > 0.1:
+            eq_filters.append(f"equalizer=f=10000:t=highshelf:g={eq_high_gain}")
+        
+        # Stage 2: Compression (Mix Strength)
+        # Map compression slider (0-1) to compand parameters
+        # mix_strength_db: 0 = -10dB, 1 = -20dB
+        mix_strength_db = -10.0 - (compression_val * 10.0)
+        if compression_val > 0.1:
+            eq_filters.append(f"compand=attacks=0.01:decays=0.2:points=-90/-90|-20/-20|-10/-{abs(mix_strength_db)}|0/0")
+        
+        # Stage 3: Reverb
+        # Map reverb slider (0-1) to delay (20-60ms) and decay (0.2-0.8)
+        if reverb_val > 0.1:
+            delay_ms = 20 + (reverb_val * 40)  # 20-60ms
+            decay = 0.2 + (reverb_val * 0.6)  # 0.2-0.8
+            eq_filters.append(f"aecho=0.8:0.88:{delay_ms/1000.0}:{decay}")
+        
+        # Stage 4: Limiter (Master Strength)
+        # Map limiter slider (0-1) to limit (0.95-0.98)
+        if limiter_val > 0.1:
+            limit = 0.95 + (limiter_val * 0.03)  # 0.95-0.98
+            eq_filters.append(f"alimiter=limit={limit}:level=1")
+        
+        # Stage 5: Final Mastering Chain (if AI Master enabled)
         if ai_master:
-            # Hard limiter (ceiling -1.0 dB)
-            # Normalize first, then apply ceiling
-            normalized = normalize(processed_audio)
+            # Loudness normalization
+            target_lufs = -13.0 + (master_strength * 2.0)  # Range: -13 to -11 LUFS
+            eq_filters.append(f"loudnorm=I={target_lufs}:TP=-1:LRA=7")
             
-            # Apply ceiling limiter (-1.0 dB)
-            # Calculate peak amplitude in dB
-            peak_amplitude = normalized.max_possible_amplitude  # This is 32767 for 16-bit
-            if peak_amplitude > 0:
-                peak_db = 20 * math.log10(peak_amplitude / 1.0)
-                target_db = -1.0  # Ceiling at -1.0 dB
-                if peak_db > target_db:
-                    # Reduce gain to bring peak to -1.0 dB
-                    gain_reduction_db = peak_db - target_db
-                    normalized = normalized - gain_reduction_db
+            # Stereo widening (using stereowiden - more reliable than stereotools)
+            eq_filters.append("stereowiden=delay=0.01:feedback=0.3:crossover=2000")
             
-            processed_audio = normalized
-            
-            # Loudness normalization (target -12 to -10 LUFS using ffmpeg loudnorm)
-            # This requires ffmpeg with libebur128
-            temp_file = mix_dir / f"temp_loudnorm_{uuid.uuid4().hex[:8]}.wav"
-            processed_audio.export(str(temp_file), format="wav")
-            
-            target_lufs = -12.0 + (master_strength * 2.0)  # Range: -12 to -10 LUFS
-            
-            # Try ffmpeg loudnorm
+            # Final limiter
+            final_limit = 0.98 - (master_strength * 0.03)  # 0.98-0.95
+            eq_filters.append(f"alimiter=limit={final_limit}")
+        
+        # V25: Execute DSP chain with ffmpeg
+        temp_processed = mix_dir / f"temp_processed_{uuid.uuid4().hex[:8]}.wav"
+        
+        if eq_filters:
+            # Build ffmpeg command with filter chain
+            filter_chain = ",".join(eq_filters)
             cmd = [
-                'ffmpeg', '-i', str(temp_file),
-                '-af', f'loudnorm=I={target_lufs}:TP=-1.0:LRA=11',
+                'ffmpeg', '-i', str(input_file_path),
+                '-af', filter_chain,
                 '-ar', '44100',
-                '-y', str(output_file)
+                '-ac', '2',  # Ensure stereo output
+                '-y', str(temp_processed)
             ]
             
             try:
-                result = subprocess.run(cmd, capture_output=True, check=True, timeout=60)
-                processed_audio = AudioSegment.from_file(str(output_file))
-                temp_file.unlink()
-            except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                logger.warning(f"FFmpeg loudnorm failed, using normalize fallback: {e}")
-                # Fallback to simple normalize
-                processed_audio = normalize(processed_audio)
-                if temp_file.exists():
-                    temp_file.unlink()
-            
-            # Subtle stereo widening using ffmpeg
-            if processed_audio.channels == 2:
-                temp_file = mix_dir / f"temp_widen_{uuid.uuid4().hex[:8]}.wav"
-                processed_audio.export(str(temp_file), format="wav")
-                
-                # Stereo widening with haas delay
-                width = 0.8 + (master_strength * 0.2)  # Range: 0.8-1.0
-                cmd = [
-                    'ffmpeg', '-i', str(temp_file),
-                    '-af', f'stereowiden=delay={0.01 * width}:feedback=0.3:crossover=2000',
-                    '-y', str(output_file)
-                ]
-                
-                try:
-                    subprocess.run(cmd, capture_output=True, check=True, timeout=60)
-                    processed_audio = AudioSegment.from_file(str(output_file))
-                    temp_file.unlink()
-                except Exception as e:
-                    logger.warning(f"FFmpeg stereo widening failed: {e}")
-                    if temp_file.exists():
-                        temp_file.unlink()
-        
-        # V21: Export final processed file
-        processed_audio.export(str(output_file), format="wav")
+                result = subprocess.run(cmd, capture_output=True, check=True, timeout=120)
+                if not temp_processed.exists():
+                    raise Exception("FFmpeg output file not created")
+                # Move to final output
+                shutil.move(str(temp_processed), str(output_file))
+                logger.info(f"✅ DSP chain applied: {len(eq_filters)} filters")
+            except (subprocess.CalledProcessError, FileNotFoundError, Exception) as e:
+                logger.error(f"FFmpeg DSP chain failed: {e}")
+                if temp_processed.exists():
+                    temp_processed.unlink()
+                # Fallback: copy input to output
+                shutil.copy(str(input_file_path), str(output_file))
+                logger.warning("Using input file as fallback (no DSP applied)")
+        else:
+            # No filters, just copy input
+            shutil.copy(str(input_file_path), str(output_file))
+            logger.info("No DSP filters applied, using input file")
         
         # Clean up temp input file
         if input_file_path and input_file_path.exists() and input_file_path != output_file:
@@ -1505,26 +1486,37 @@ async def mix_process(
             except:
                 pass
         
-        # V21: Update project memory
+        # V25: Update project memory
         memory = get_or_create_project_memory(session_id, MEDIA_DIR)
         memory.add_asset("mix", output_url, {
             "ai_mix": ai_mix,
             "ai_master": ai_master,
             "preset": preset,
             "mix_strength": mix_strength,
-            "master_strength": master_strength
+            "master_strength": master_strength,
+            "eq_low": eq_low_gain,
+            "eq_mid": eq_mid_gain,
+            "eq_high": eq_high_gain,
+            "compression": compression_val,
+            "reverb": reverb_val,
+            "limiter": limiter_val
         })
         memory.update("mixCompleted", True)
         
         logger.info(f"✅ Mix & master completed - preset={preset}, ai_mix={ai_mix}, ai_master={ai_master}")
         logger.info(f"📁 Processed file saved to: {output_url}")
+        logger.info(f"🎛️ DSP params: EQ({eq_low_gain:.1f}/{eq_mid_gain:.1f}/{eq_high_gain:.1f}) Comp={compression_val:.2f} Rev={reverb_val:.2f} Lim={limiter_val:.2f}")
         
         log_endpoint_event("/mix/process", session_id, "success", {
             "preset": preset,
             "ai_mix": ai_mix,
             "ai_master": ai_master,
             "mix_strength": mix_strength,
-            "master_strength": master_strength
+            "master_strength": master_strength,
+            "eq": {"low": eq_low_gain, "mid": eq_mid_gain, "high": eq_high_gain},
+            "compression": compression_val,
+            "reverb": reverb_val,
+            "limiter": limiter_val
         })
         
         return success_response(

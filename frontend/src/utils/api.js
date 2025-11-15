@@ -220,7 +220,7 @@ export const api = {
     return handleResponse(response);
   },
 
-  // V21: Process mix and master with AI controls
+  // V25: Process mix and master with REAL DSP chain
   processMix: async (sessionId, file, params) => {
     const formData = new FormData();
     
@@ -240,6 +240,16 @@ export const api = {
     formData.append('mix_strength', params.mix_strength || 0.7);
     formData.append('master_strength', params.master_strength || 0.8);
     formData.append('preset', params.preset || 'clean');
+    
+    // V25: EQ parameters
+    formData.append('eq_low', params.eq_low !== undefined ? params.eq_low : 0.0);
+    formData.append('eq_mid', params.eq_mid !== undefined ? params.eq_mid : 0.0);
+    formData.append('eq_high', params.eq_high !== undefined ? params.eq_high : 0.0);
+    
+    // V25: FX parameters
+    formData.append('compression', params.compression !== undefined ? params.compression : 0.5);
+    formData.append('reverb', params.reverb !== undefined ? params.reverb : 0.3);
+    formData.append('limiter', params.limiter !== undefined ? params.limiter : 0.8);
 
     const response = await fetch(`${API_BASE}/mix/process`, {
       method: 'POST',
@@ -279,18 +289,19 @@ export const api = {
    return handleResponse(response);
  },
 
-  generateContent: async (title, artist, sessionId = null) => {
-    const response = await fetch(`${API_BASE}/content/ideas`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: sessionId,
-        title,
-        artist,
-      }),
-    });
-    return handleResponse(response);
-  },
+  // V23.1: LEGACY - Old caption generator removed
+  // generateContent: async (title, artist, sessionId = null) => {
+  //   const response = await fetch(`${API_BASE}/content/ideas`, {
+  //     method: 'POST',
+  //     headers: { 'Content-Type': 'application/json' },
+  //     body: JSON.stringify({
+  //       session_id: sessionId,
+  //       title,
+  //       artist,
+  //     }),
+  //   });
+  //   return handleResponse(response);
+  // },
 
   // V23: ContentStage MVP endpoints
   generateVideoIdea: async (sessionId, title, lyrics, mood, genre) => {
