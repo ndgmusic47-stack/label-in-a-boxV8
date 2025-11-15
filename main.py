@@ -1401,83 +1401,66 @@ async def mix_process(
             compression_val = 0.6  # medium compression
             limiter_val = 0.5  # medium limiter
         
-        # V25: REAL DSP PIPELINE using ffmpeg filters
+        # V25.1: REAL DSP PIPELINE using ffmpeg filters (V25 spec)
         # Build filter chain as single ffmpeg command
         
-        # Stage 1: EQ (3-band)
-        eq_filters = []
-        if abs(eq_low_gain) > 0.1:
-            eq_filters.append(f"equalizer=f=100:t=lowshelf:g={eq_low_gain}")
-        if abs(eq_mid_gain) > 0.1:
-            eq_filters.append(f"equalizer=f=1500:t=peak:g={eq_mid_gain}:width=2")
-        if abs(eq_high_gain) > 0.1:
-            eq_filters.append(f"equalizer=f=10000:t=highshelf:g={eq_high_gain}")
+        filters = []
         
-        # Stage 2: Compression (Mix Strength)
-        # Map compression slider (0-1) to compand parameters
-        # mix_strength_db: 0 = -10dB, 1 = -20dB
+        # Stage 1: EQ (3-band) - always apply
+        filters.append(f"equalizer=f=100:t=lowshelf:g={eq_low_gain}")
+        filters.append(f"equalizer=f=1500:t=peak:g={eq_mid_gain}:width=2")
+        filters.append(f"equalizer=f=10000:t=highshelf:g={eq_high_gain}")
+        
+        # Stage 2: Compression (compand)
+        # Map compression slider (0-1) to compand threshold
+        # compression 0 = no compression, 1 = full compression
+        # mix_strength_db: threshold from -10dB (no comp) to -20dB (full comp)
         mix_strength_db = -10.0 - (compression_val * 10.0)
-        if compression_val > 0.1:
-            eq_filters.append(f"compand=attacks=0.01:decays=0.2:points=-90/-90|-20/-20|-10/-{abs(mix_strength_db)}|0/0")
+        filters.append(f"compand=attacks=0.01:decays=0.2:points=-90/-90|-20/-20|-10/-{abs(mix_strength_db)}|0/0")
         
-        # Stage 3: Reverb
+        # Stage 3: Reverb (aecho)
         # Map reverb slider (0-1) to delay (20-60ms) and decay (0.2-0.8)
-        if reverb_val > 0.1:
-            delay_ms = 20 + (reverb_val * 40)  # 20-60ms
-            decay = 0.2 + (reverb_val * 0.6)  # 0.2-0.8
-            eq_filters.append(f"aecho=0.8:0.88:{delay_ms/1000.0}:{decay}")
+        delay_ms = 20 + (reverb_val * 40)  # 20-60ms
+        decay = 0.2 + (reverb_val * 0.6)  # 0.2-0.8
+        filters.append(f"aecho=0.8:0.88:{delay_ms/1000.0}:{decay}")
         
-        # Stage 4: Limiter (Master Strength)
-        # Map limiter slider (0-1) to limit (0.95-0.98)
-        if limiter_val > 0.1:
-            limit = 0.95 + (limiter_val * 0.03)  # 0.95-0.98
-            eq_filters.append(f"alimiter=limit={limit}:level=1")
+        # Stage 4: Limiter (per slider)
+        # Always apply limiter with limit=0.95
+        filters.append("alimiter=limit=0.95:level=1")
         
-        # Stage 5: Final Mastering Chain (if AI Master enabled)
-        if ai_master:
-            # Loudness normalization
-            target_lufs = -13.0 + (master_strength * 2.0)  # Range: -13 to -11 LUFS
-            eq_filters.append(f"loudnorm=I={target_lufs}:TP=-1:LRA=7")
-            
-            # Stereo widening (using stereowiden - more reliable than stereotools)
-            eq_filters.append("stereowiden=delay=0.01:feedback=0.3:crossover=2000")
-            
-            # Final limiter
-            final_limit = 0.98 - (master_strength * 0.03)  # 0.98-0.95
-            eq_filters.append(f"alimiter=limit={final_limit}")
+        # Stage 5: Final Mastering Chain (always apply)
+        # loudnorm=I=-13:TP=-1:LRA=7,stereotools=mlev=1.05,alimiter=limit=0.98
+        filters.append("loudnorm=I=-13:TP=-1:LRA=7")
+        filters.append("stereotools=mlev=1.05")
+        filters.append("alimiter=limit=0.98")
         
-        # V25: Execute DSP chain with ffmpeg
+        # V25.1: Execute DSP chain with ffmpeg (single command)
         temp_processed = mix_dir / f"temp_processed_{uuid.uuid4().hex[:8]}.wav"
         
-        if eq_filters:
-            # Build ffmpeg command with filter chain
-            filter_chain = ",".join(eq_filters)
-            cmd = [
-                'ffmpeg', '-i', str(input_file_path),
-                '-af', filter_chain,
-                '-ar', '44100',
-                '-ac', '2',  # Ensure stereo output
-                '-y', str(temp_processed)
-            ]
-            
-            try:
-                result = subprocess.run(cmd, capture_output=True, check=True, timeout=120)
-                if not temp_processed.exists():
-                    raise Exception("FFmpeg output file not created")
-                # Move to final output
-                shutil.move(str(temp_processed), str(output_file))
-                logger.info(f"✅ DSP chain applied: {len(eq_filters)} filters")
-            except (subprocess.CalledProcessError, FileNotFoundError, Exception) as e:
-                logger.error(f"FFmpeg DSP chain failed: {e}")
-                if temp_processed.exists():
-                    temp_processed.unlink()
-                # Fallback: copy input to output
-                shutil.copy(str(input_file_path), str(output_file))
-                logger.warning("Using input file as fallback (no DSP applied)")
-        else:
-            # No filters, just copy input
+        # Build ffmpeg command with filter chain
+        filter_chain = ",".join(filters)
+        cmd = [
+            'ffmpeg', '-i', str(input_file_path),
+            '-af', filter_chain,
+            '-ar', '44100',
+            '-ac', '2',  # Ensure stereo output
+            '-y', str(temp_processed)
+        ]
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, check=True, timeout=120)
+            if not temp_processed.exists():
+                raise Exception("FFmpeg output file not created")
+            # Move to final output
+            shutil.move(str(temp_processed), str(output_file))
+            logger.info(f"✅ DSP chain applied: {len(filters)} filters")
+        except (subprocess.CalledProcessError, FileNotFoundError, Exception) as e:
+            logger.error(f"FFmpeg DSP chain failed: {e}")
+            if temp_processed.exists():
+                temp_processed.unlink()
+            # Fallback: copy input to output
             shutil.copy(str(input_file_path), str(output_file))
-            logger.info("No DSP filters applied, using input file")
+            logger.warning("Using input file as fallback (no DSP applied)")
         
         # Clean up temp input file
         if input_file_path and input_file_path.exists() and input_file_path != output_file:
@@ -1486,7 +1469,7 @@ async def mix_process(
             except:
                 pass
         
-        # V25: Update project memory
+        # V25.1: Update project memory (removed mixCompleted)
         memory = get_or_create_project_memory(session_id, MEDIA_DIR)
         memory.add_asset("mix", output_url, {
             "ai_mix": ai_mix,
@@ -1501,7 +1484,6 @@ async def mix_process(
             "reverb": reverb_val,
             "limiter": limiter_val
         })
-        memory.update("mixCompleted", True)
         
         logger.info(f"✅ Mix & master completed - preset={preset}, ai_mix={ai_mix}, ai_master={ai_master}")
         logger.info(f"📁 Processed file saved to: {output_url}")
@@ -1519,10 +1501,10 @@ async def mix_process(
             "limiter": limiter_val
         })
         
+        # V25.1: Return EXACTLY file_url (no other fields required)
         return success_response(
             data={
-                "file_url": output_url,
-                "ok": True
+                "file_url": output_url
             },
             message="Mix and master completed successfully"
         )

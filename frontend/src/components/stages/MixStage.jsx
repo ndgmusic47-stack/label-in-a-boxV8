@@ -23,12 +23,18 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
   
   const fileInputRef = useRef(null);
   const [uploadedFile, setUploadedFile] = useState(null);
+  const [fileSource, setFileSource] = useState(null); // V25.1: Two-phase update source
   const [audioUrl, setAudioUrl] = useState(null);
+  const wavesurferReadyRef = useRef(false);
 
-  // V25: Fixed getAudioFile() - always returns File or URL string, never null
+  // V25.1: Fixed getAudioFile() - returns File or URL string, never null
+  // Priority: uploadedFile -> sessionData.mixedFile -> sessionData.vocalFile -> null
   const getAudioFile = () => {
     if (uploadedFile instanceof File) {
       return uploadedFile;
+    }
+    if (sessionData.mixedFile && typeof sessionData.mixedFile === 'string') {
+      return sessionData.mixedFile;
     }
     if (sessionData.vocalFile && typeof sessionData.vocalFile === 'string') {
       return sessionData.vocalFile;
@@ -36,23 +42,35 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
     return null;
   };
 
-  // V25: Can mix if we have a file
+  // V25.1: Can mix if we have a file
   const canMix = !!getAudioFile();
 
-  // V25: Safety - Ensure audio URL only updates when file exists
+  // V25.1 FIX 2: Phase 1 - Update fileSource only when file/URL actually changes
+  // This prevents race conditions from unrelated state updates
   useEffect(() => {
-    if (uploadedFile instanceof File) {
-      const url = URL.createObjectURL(uploadedFile);
-      setAudioUrl(url);
-      return () => {
-        URL.revokeObjectURL(url);
-      };
-    } else if (sessionData.vocalFile && typeof sessionData.vocalFile === 'string' && sessionData.vocalFile.length > 0) {
-      setAudioUrl(sessionData.vocalFile);
-    } else {
+    const src = getAudioFile(); // File OR URL string
+    setFileSource(src);
+  }, [uploadedFile, sessionData.mixedFile, sessionData.vocalFile]);
+
+  // V25.1 FIX 2: Phase 2 - Convert fileSource to audioUrl (two-phase update)
+  useEffect(() => {
+    // Reset Wavesurfer ready flag when source changes
+    wavesurferReadyRef.current = false;
+    
+    if (!fileSource) {
       setAudioUrl(null);
+      return;
     }
-  }, [uploadedFile, sessionData.vocalFile]);
+
+    if (fileSource instanceof File) {
+      const url = URL.createObjectURL(fileSource);
+      setAudioUrl(url);
+      return () => URL.revokeObjectURL(url);
+    } else {
+      // fileSource is already a URL string
+      setAudioUrl(fileSource);
+    }
+  }, [fileSource]);
 
   // V24: Handle file upload
   const handleFileSelect = async (e) => {
@@ -73,57 +91,118 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
     setError(null);
   };
 
-  // V25: Fixed handleMixAndMaster - uses api.processMix with REAL DSP parameters
+  // V25.1: Fixed handleMixAndMaster - unified DSP parameter model with preset overrides
   const handleMixAndMaster = async () => {
     const file = getAudioFile();
     
-    // V25: Safety - validate file exists
+    // V25.1: Validate file exists
     if (!file) {
       voice.speak('Please upload a song file to mix.');
       setError('Please upload an audio file to mix.');
       return;
     }
     
-    // V25: Safety - validate file is File object or valid URL
+    // V25.1: Validate file is File object or valid URL
     if (!(file instanceof File) && typeof file !== 'string') {
       voice.speak('Invalid audio file. Please try another file.');
       setError('Invalid audio file format.');
       return;
     }
+    
+    // V25.1: Validate URL is accessible (for string URLs)
+    if (typeof file === 'string') {
+      try {
+        const testUrl = file.startsWith('/') ? `http://localhost:8000${file}` : file;
+        const response = await fetch(testUrl, { method: 'HEAD' });
+        if (!response.ok) {
+          throw new Error('File URL not accessible');
+        }
+      } catch (err) {
+        voice.speak('Cannot access audio file. Please check the file.');
+        setError('Cannot access audio file. Please upload again.');
+        return;
+      }
+    }
 
     setMixing(true);
     setError(null);
+    wavesurferReadyRef.current = false;
     
     try {
       voice.speak('Mixing and mastering your track. One moment.');
       
-      // V25: Validate DSP parameters before sending
-      const validatedParams = {
+      // V25.1: Build DSP object - start with manual slider values
+      let eqLow = Math.max(-6, Math.min(6, eq.low));
+      let eqMid = Math.max(-6, Math.min(6, eq.mid));
+      let eqHigh = Math.max(-6, Math.min(6, eq.high));
+      let compressionVal = Math.max(0, Math.min(1, comp));
+      let reverbVal = Math.max(0, Math.min(1, reverb));
+      let limiterVal = Math.max(0, Math.min(1, limiter));
+      
+      // V25.1: Apply preset overrides if preset is selected
+      if (selectedPreset === 'warm') {
+        eqLow = 2.0;
+        eqMid = -1.0;
+        eqHigh = 1.0;
+        reverbVal = 0.3;
+        compressionVal = 0.6;
+        limiterVal = 0.7;
+      } else if (selectedPreset === 'clean') {
+        eqLow = 0.0;
+        eqMid = -2.0;
+        eqHigh = 0.0;
+        reverbVal = 0.0;
+        compressionVal = 0.3;
+        limiterVal = 0.0;
+      } else if (selectedPreset === 'bright') {
+        eqLow = 0.0;
+        eqMid = -1.0;
+        eqHigh = 3.0;
+        reverbVal = 0.0;
+        compressionVal = 0.6;
+        limiterVal = 0.5;
+      }
+      
+      // V25.1: Final DSP object (already clamped)
+      const dspParams = {
         ai_mix: aiMixEnabled,
         ai_master: aiMasterEnabled,
         mix_strength: Math.max(0, Math.min(1, mixStrength)),
         master_strength: Math.max(0, Math.min(1, masterStrength)),
         preset: ['warm', 'clean', 'bright'].includes(selectedPreset) ? selectedPreset : 'clean',
-        // V25: Real DSP parameters (clamped to valid ranges)
-        eq_low: Math.max(-6, Math.min(6, eq.low)),
-        eq_mid: Math.max(-6, Math.min(6, eq.mid)),
-        eq_high: Math.max(-6, Math.min(6, eq.high)),
-        compression: Math.max(0, Math.min(1, comp)),
-        reverb: Math.max(0, Math.min(1, reverb)),
-        limiter: Math.max(0, Math.min(1, limiter))
+        eq_low: eqLow,
+        eq_mid: eqMid,
+        eq_high: eqHigh,
+        compression: compressionVal,
+        reverb: reverbVal,
+        limiter: limiterVal
       };
       
-      // V25: Call /mix/process endpoint with REAL DSP parameters
-      const result = await api.processMix(sessionId, file, validatedParams);
+      // V25.1: Call /mix/process endpoint
+      const result = await api.processMix(sessionId, file, dspParams);
       
       if (result && result.file_url) {
-        // V25: Update sessionData with mixedFile
-        updateSessionData({ 
-          mixedFile: result.file_url,
-          mixCompleted: true
+        // V25.1 FIX 2: Step 1 - Set audioUrl FIRST (before touching sessionData)
+        setAudioUrl(result.file_url);
+
+        // V25.1 FIX 2: Step 2 - Wait for Wavesurfer to fully load
+        await new Promise(resolve => {
+          const check = () => {
+            if (wavesurferReadyRef.current) resolve();
+            else setTimeout(check, 50);
+          };
+          check();
         });
-        
-        // V25: Complete the mix stage
+
+        // V25.1 FIX 2: Step 3 - THEN update session data
+        updateSessionData({ 
+          mixedFile: result.file_url
+        });
+
+        // V25.1: Clear uploadedFile after successful mix
+        setUploadedFile(null);
+
+        // V25.1 FIX 2: Step 4 - THEN advance stage
         if (completeStage) {
           await completeStage('mix');
         }
@@ -140,6 +219,11 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
     } finally {
       setMixing(false);
     }
+  };
+  
+  // V25.1: Handle Wavesurfer ready callback
+  const handleWavesurferReady = () => {
+    wavesurferReadyRef.current = true;
   };
 
   return (
@@ -160,28 +244,24 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
             className="hidden"
           />
           
-          {/* V25: Audio Player Preview (moved above controls) */}
-          {sessionData.mixedFile ? (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="w-full max-w-4xl p-6 bg-studio-gray/30 rounded-lg border border-studio-white/10"
-            >
-              <p className="text-sm text-studio-white/80 mb-3 font-montserrat">✓ Mix & Master Ready</p>
-              <WavesurferPlayer url={sessionData.mixedFile} color="#A855F7" height={120} />
-            </motion.div>
-          ) : canMix && audioUrl && (
-            <div className="w-full max-w-4xl p-4 bg-studio-gray/20 rounded-lg border border-studio-white/5">
-              <p className="text-xs text-studio-white/60 mb-2 font-montserrat">Audio Preview</p>
+          {/* V25.1 FIX 1: ONE unified Wavesurfer Player (no conditional branches) */}
+          {audioUrl && (
+            <div className="w-full max-w-4xl p-4 rounded-lg border bg-studio-gray/30 border-studio-white/10">
+              {sessionData.mixedFile ? (
+                <p className="text-sm text-studio-white/80 mb-3 font-montserrat">✓ Mix & Master Ready</p>
+              ) : (
+                <p className="text-xs text-studio-white/60 mb-2 font-montserrat">Audio Preview</p>
+              )}
               <WavesurferPlayer 
-                url={audioUrl} 
-                color="#10B981" 
-                height={80} 
+                url={audioUrl}
+                height={sessionData.mixedFile ? 120 : 80}
+                color={sessionData.mixedFile ? "#A855F7" : "#10B981"}
+                onReady={handleWavesurferReady}
               />
             </div>
           )}
           
-          {/* V25: Mix Controls (reorganized with labels and grouping) */}
+          {/* V25.1: Mix Controls (reorganized with labels and grouping) */}
           <div className="w-full max-w-4xl space-y-8">
             {/* Tone Controls (EQ) */}
             <div className="space-y-4">
