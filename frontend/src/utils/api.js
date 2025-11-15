@@ -292,6 +292,81 @@ export const api = {
     return handleResponse(response);
   },
 
+  // V23: ContentStage MVP endpoints
+  generateVideoIdea: async (sessionId, title, lyrics, mood, genre) => {
+    const response = await fetch(`${API_BASE}/content/idea`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        title,
+        lyrics,
+        mood,
+        genre,
+      }),
+    });
+    return handleResponse(response);
+  },
+
+  uploadVideo: async (file, sessionId) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (sessionId) formData.append('session_id', sessionId);
+
+    const response = await fetch(`${API_BASE}/content/upload-video`, {
+      method: 'POST',
+      body: formData,
+    });
+    return handleResponse(response);
+  },
+
+  analyzeVideo: async (transcript, title, lyrics, mood, genre) => {
+    const response = await fetch(`${API_BASE}/content/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        transcript,
+        title,
+        lyrics,
+        mood,
+        genre,
+      }),
+    });
+    return handleResponse(response);
+  },
+
+  generateContentText: async (sessionId, title, transcript, lyrics, mood, genre) => {
+    const response = await fetch(`${API_BASE}/content/generate-text`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        title,
+        transcript,
+        lyrics,
+        mood,
+        genre,
+      }),
+    });
+    return handleResponse(response);
+  },
+
+  scheduleVideo: async (sessionId, videoUrl, caption, hashtags, platform, scheduleTime) => {
+    const response = await fetch(`${API_BASE}/content/schedule`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        video_url: videoUrl,
+        caption,
+        hashtags: hashtags || [],
+        platform: platform || 'tiktok',
+        schedule_time: scheduleTime,
+      }),
+    });
+    return handleResponse(response);
+  },
+
 
  // ========== ANALYTICS ==========
 

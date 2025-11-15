@@ -35,6 +35,7 @@ from project_memory import ProjectMemory, get_or_create_project_memory, list_all
 from cover_art_generator import CoverArtGenerator
 from analytics_engine import AnalyticsEngine
 from social_scheduler import SocialScheduler
+from content import content_router
 
 # ============================================================================
 # PHASE 2.2: SHARED UTILITIES
@@ -2144,6 +2145,7 @@ async def advance_stage(session_id: str):
 # INCLUDE API ROUTER
 # ============================================================================
 app.include_router(api)
+app.include_router(content_router)
 
 # ============================================================================
 # FRONTEND SERVING (MUST BE LAST - AFTER ALL API ROUTES)
