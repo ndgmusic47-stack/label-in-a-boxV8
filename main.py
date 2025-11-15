@@ -677,6 +677,318 @@ Make it authentic and emotionally resonant."""
         return error_response(f"Lyrics generation failed: {str(e)}")
 
 # ============================================================================
+# 2.1. HELPER FUNCTIONS FOR V17 LYRIC MODULE
+# ============================================================================
+
+def detect_bpm(filepath):
+    """Detect BPM from audio file using aubio"""
+    try:
+        from aubio import tempo, source
+        s = source(str(filepath))
+        o = tempo()
+        beats = []
+        while True:
+            samples, read = s()
+            is_beat = o(samples)
+            if is_beat:
+                beats.append(o.get_last_s())
+            if read < s.hop_size:
+                break
+        if len(beats) > 1:
+            bpms = 60.0 / (beats[1] - beats[0])
+            return int(bpms)
+        return 140
+    except Exception as e:
+        logger.warning(f"BPM detection failed: {e} - using default 140")
+        return 140
+
+def analyze_mood(filepath):
+    """Analyze mood from audio file - simple implementation"""
+    # For now, return default mood as specified
+    # In a full implementation, this could analyze spectral features, energy, etc.
+    return "dark cinematic emotional"
+
+def generate_np22_lyrics(theme: Optional[str] = None, bpm: Optional[int] = None, mood: Optional[str] = None) -> str:
+    """Generate NP22-style lyrics using OpenAI with the specified template"""
+    api_key = os.getenv("OPENAI_API_KEY")
+    
+    # Build prompt based on NP22 template
+    base_prompt = """Write lyrics in the NP22 sound: a cinematic fusion of soulful rock and modern trap — dark-purple energy, emotional intensity, motivational tone, stadium-level delivery. Focus on clean rhythm, expressive soul, mindset themes. Structure: Hook + Verse 1 + Optional Pre-Hook. Keep flow tight, melodic, empowering."""
+    
+    if bpm:
+        base_prompt += f"\n\nMatch the BPM: {bpm} - ensure the lyrics flow naturally with this tempo."
+    
+    if mood:
+        base_prompt += f"\n\nMood/Energy: {mood}"
+    
+    if theme:
+        base_prompt += f"\n\nTheme: {theme}"
+    else:
+        base_prompt += "\n\nTheme: general motivational mindset"
+    
+    # Fallback lyrics
+    fallback_lyrics = """[Hook]
+Rising up from the darkness, I'm taking control
+Every step forward, I'm reaching my goal
+This is my moment, this is my time
+Nothing can stop me, I'm in my prime
+
+[Verse 1]
+Through the struggle and the pain
+I found my strength again
+No more hiding in the shadows
+I'm breaking free from all the chains
+Standing tall, I claim my name"""
+    
+    if not api_key:
+        logger.warning("OpenAI API key not configured - using fallback lyrics")
+        return fallback_lyrics
+    
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a professional songwriter specializing in NP22-style lyrics: cinematic fusion of soulful rock and modern trap with dark-purple energy, emotional intensity, and motivational tone."},
+                {"role": "user", "content": base_prompt}
+            ],
+            temperature=0.9
+        )
+        
+        lyrics_text = response.choices[0].message.content.strip() if response.choices[0].message.content else fallback_lyrics
+        return lyrics_text
+    except Exception as e:
+        logger.warning(f"OpenAI lyrics generation failed: {e} - using fallback")
+        return fallback_lyrics
+
+# ============================================================================
+# 2.2. POST /lyrics/from_beat - V17 MODE 1: GENERATE FROM BEAT
+# ============================================================================
+
+@api.post("/lyrics/from_beat")
+async def generate_lyrics_from_beat(file: UploadFile = File(...), session_id: Optional[str] = Form(None)):
+    """V17: Generate NP22-style lyrics from uploaded beat file"""
+    session_id = session_id if session_id else str(uuid.uuid4())
+    session_path = get_session_media_path(session_id)
+    
+    try:
+        # Save uploaded file temporarily
+        temp_file = session_path / f"temp_beat_{uuid.uuid4().hex[:8]}.mp3"
+        content = await file.read()
+        with open(temp_file, 'wb') as f:
+            f.write(content)
+        
+        # Detect BPM and analyze mood
+        bpm = detect_bpm(temp_file)
+        mood = analyze_mood(temp_file)
+        
+        # Generate lyrics using NP22 template
+        lyrics_text = generate_np22_lyrics(theme=None, bpm=bpm, mood=mood)
+        
+        # Clean up temp file
+        try:
+            temp_file.unlink()
+        except:
+            pass
+        
+        log_endpoint_event("/lyrics/from_beat", session_id, "success", {"bpm": bpm, "mood": mood})
+        return success_response(
+            data={
+                "lyrics": lyrics_text,
+                "bpm": bpm,
+                "mood": mood
+            },
+            message="Lyrics generated from beat successfully"
+        )
+    except Exception as e:
+        log_endpoint_event("/lyrics/from_beat", session_id, "error", {"error": str(e)})
+        return error_response(f"Lyrics generation from beat failed: {str(e)}")
+
+# ============================================================================
+# 2.3. POST /lyrics/free - V17 MODE 2: GENERATE FREE LYRICS
+# ============================================================================
+
+class FreeLyricsRequest(BaseModel):
+    theme: str = Field(..., description="Theme for the lyrics")
+
+# V18.1: Structured lyric parsing helper function
+import re
+
+def parse_lyrics_to_structured(lyrics_text: str):
+    """Parse lyrics text into structured sections based on headers like [Hook], [Verse 1], etc."""
+    if not lyrics_text or not isinstance(lyrics_text, str):
+        return None
+    
+    sections = {}
+    lines = lyrics_text.split('\n')
+    current_section = None
+    current_lines = []
+    
+    for line in lines:
+        # Detect section headers: [Hook], [Chorus], [Verse 1], [Verse], [Bridge], etc.
+        section_match = re.match(r'^\[(Hook|Chorus|Verse\s*\d*|Bridge|Intro|Outro|Pre-Chorus)\](.*)$', line, re.IGNORECASE)
+        
+        if section_match:
+            # Save previous section
+            if current_section and current_lines:
+                section_key = current_section.lower().replace(' ', '').replace('-', '')
+                # Handle verse numbers
+                if 'verse' in section_key:
+                    num_match = re.search(r'\d+', current_section)
+                    if num_match:
+                        section_key = f"verse{num_match.group()}"
+                    else:
+                        section_key = "verse"
+                sections[section_key] = '\n'.join([l for l in current_lines if l.strip()])
+            
+            # Start new section
+            current_section = section_match.group(1)
+            current_lines = []
+        elif line.strip():
+            current_lines.append(line)
+    
+    # Save last section
+    if current_section and current_lines:
+        section_key = current_section.lower().replace(' ', '').replace('-', '')
+        if 'verse' in section_key:
+            num_match = re.search(r'\d+', current_section)
+            if num_match:
+                section_key = f"verse{num_match.group()}"
+            else:
+                section_key = "verse"
+        sections[section_key] = '\n'.join([l for l in current_lines if l.strip()])
+    
+    return sections if sections else None
+
+class LyricRefineRequest(BaseModel):
+    lyrics: str = Field(..., description="Full current lyrics as text")
+    instruction: str = Field(..., description="User instruction for refinement")
+    bpm: Optional[int] = Field(default=None, description="Beats per minute (optional)")
+    history: Optional[List[dict]] = Field(default=[], description="V18.1: Recent conversation history (last 3 interactions)")
+    structured_lyrics: Optional[dict] = Field(default=None, description="V18.1: Structured lyrics object with sections")
+    rhythm_map: Optional[dict] = Field(default=None, description="V18.1: Rhythm approximation map per section")
+
+@api.post("/lyrics/free")
+async def generate_free_lyrics(request: FreeLyricsRequest):
+    """V17: Generate NP22-style lyrics from theme only"""
+    try:
+        # Generate lyrics using NP22 template with theme only
+        lyrics_text = generate_np22_lyrics(theme=request.theme, bpm=None, mood=None)
+        
+        log_endpoint_event("/lyrics/free", None, "success", {"theme": request.theme})
+        return success_response(
+            data={
+                "lyrics": lyrics_text
+            },
+            message="Free lyrics generated successfully"
+        )
+    except Exception as e:
+        log_endpoint_event("/lyrics/free", None, "error", {"error": str(e)})
+        return error_response(f"Free lyrics generation failed: {str(e)}")
+
+# ============================================================================
+# 2.4. POST /lyrics/refine - V18: INTERACTIVE LYRIC COLLABORATION
+# ============================================================================
+
+@api.post("/lyrics/refine")
+async def refine_lyrics(request: LyricRefineRequest):
+    """V18.1: Refine, rewrite, or extend lyrics based on user instructions with structured parsing and history"""
+    api_key = os.getenv("OPENAI_API_KEY")
+    
+    # V18.1: Parse structured lyrics if not provided
+    structured_lyrics = request.structured_lyrics
+    if not structured_lyrics:
+        structured_lyrics = parse_lyrics_to_structured(request.lyrics)
+    
+    # Build prompt using NP22 template + original lyrics + user instruction + BPM if given
+    base_prompt = """You are an NP22-style lyric collaborator. Rewrite lyrics based on instruction while keeping:
+- NP22 style (cinematic soulful rock × modern trap)
+- dark-purple energy
+- mindset themes
+- melodic flow
+- stadium-level emotion
+
+Only modify what the instruction asks for. Keep original structure unless instruction says otherwise."""
+    
+    if request.bpm:
+        base_prompt += f"\n\nBPM: {request.bpm} - ensure the lyrics flow naturally with this tempo."
+    
+    # V18.1: Add structured lyric information to prompt
+    structure_info = ""
+    if structured_lyrics:
+        structure_info = "\n\nOriginal lyric structure:\n"
+        for section_key, section_text in structured_lyrics.items():
+            line_count = len([l for l in section_text.split('\n') if l.strip()])
+            structure_info += f"- {section_key.capitalize()}: {line_count} lines\n"
+    
+    # V18.1: Add rhythm map information
+    rhythm_info = ""
+    if request.rhythm_map:
+        rhythm_info = "\n\nRhythm map of lines (approximate bars per line):\n"
+        for section_key, bar_counts in request.rhythm_map.items():
+            if isinstance(bar_counts, list):
+                rhythm_info += f"{section_key.capitalize()} bars: {bar_counts}\n"
+        rhythm_info += "Please preserve approximate rhythm when refining.\n"
+    
+    # V18.1: Add conversation history context
+    history_context = ""
+    if request.history and len(request.history) > 0:
+        history_context = "\n\nHere is recent conversation context:\n"
+        for i, entry in enumerate(request.history, 1):
+            prev_lyrics_preview = entry.get('previousLyrics', '')[:100] + '...' if len(entry.get('previousLyrics', '')) > 100 else entry.get('previousLyrics', '')
+            instruction = entry.get('instruction', '')
+            history_context += f"{i}. User said: {instruction}\n"
+            history_context += f"   Previous lyrics: {prev_lyrics_preview}\n"
+    
+    user_prompt = f"""Original lyrics:
+{request.lyrics}{structure_info}{rhythm_info}{history_context}
+
+User instruction: {request.instruction}
+
+Rewrite the lyrics according to the instruction while maintaining NP22 style. Return only the revised lyrics as plain text (no JSON, no explanations)."""
+    
+    # Fallback: simple instruction-applied version
+    fallback_lyrics = request.lyrics  # Keep original if refinement fails
+    
+    if not api_key:
+        logger.warning("OpenAI API key not configured - returning original lyrics")
+        log_endpoint_event("/lyrics/refine", None, "error", {"error": "OpenAI API key not configured"})
+        return success_response(
+            data={"lyrics": fallback_lyrics},
+            message="OpenAI API key not configured - returning original lyrics"
+        )
+    
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": base_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.9
+        )
+        
+        refined_lyrics = response.choices[0].message.content.strip() if response.choices[0].message.content else fallback_lyrics
+        
+        log_endpoint_event("/lyrics/refine", None, "success", {"instruction_length": len(request.instruction), "bpm": request.bpm})
+        return success_response(
+            data={"lyrics": refined_lyrics},
+            message="Lyrics refined successfully"
+        )
+    except Exception as e:
+        logger.warning(f"OpenAI lyrics refinement failed: {e} - returning original lyrics")
+        log_endpoint_event("/lyrics/refine", None, "error", {"error": str(e)})
+        return success_response(
+            data={"lyrics": fallback_lyrics},
+            message="Refinement failed - returning original lyrics"
+        )
+
+# ============================================================================
 # 3. POST /recordings/upload - FIX MULTIPART + MEDIA_DIR BUG
 # ============================================================================
 

@@ -148,6 +148,46 @@ export const api = {
    return handleResponse(response);
  },
 
+ // V17: Generate lyrics from beat
+ generateLyricsFromBeat: async (beatFile, sessionId = null) => {
+   const formData = new FormData();
+   formData.append('file', beatFile);
+   if (sessionId) formData.append('session_id', sessionId);
+   
+   const response = await fetch(`${API_BASE}/lyrics/from_beat`, {
+     method: 'POST',
+     body: formData,
+   });
+   return handleResponse(response);
+ },
+
+ // V17: Generate free lyrics from theme
+ generateFreeLyrics: async (theme) => {
+   const response = await fetch(`${API_BASE}/lyrics/free`, {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json' },
+     body: JSON.stringify({ theme }),
+   });
+   return handleResponse(response);
+ },
+
+ // V18.1: Refine lyrics based on user instruction with history and metadata
+ refineLyrics: async (lyricsText, instruction, bpm = null, history = [], structuredLyrics = null, rhythmMap = null) => {
+   const response = await fetch(`${API_BASE}/lyrics/refine`, {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json' },
+     body: JSON.stringify({ 
+       lyrics: lyricsText, 
+       instruction, 
+       bpm,
+       history,
+       structured_lyrics: structuredLyrics,
+       rhythm_map: rhythmMap
+     }),
+   });
+   return handleResponse(response);
+ },
+
  uploadRecording: async (file, sessionId = null) => {
    const formData = new FormData();
    formData.append('file', file);
