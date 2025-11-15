@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { motion } from 'framer-motion';
 
-export default function StageWrapper({ title, icon, children, onClose, voice, onVoiceCommand }) {
+export default function StageWrapper({ title, icon, children, onClose, onNext, voice, onVoiceCommand }) {
   useEffect(() => {
     if (voice && onVoiceCommand) {
       const checkTranscript = setInterval(() => {
@@ -23,8 +23,8 @@ export default function StageWrapper({ title, icon, children, onClose, voice, on
           animate={{ opacity: 1, y: 0 }}
           className="stage-header-title"
         >
-          <span className="text-3xl">{icon}</span>
-          <h2 className="text-2xl font-bold font-montserrat text-studio-white">
+          <span className="icon-wrapper text-3xl">{icon}</span>
+          <h2 className="text-lg text-studio-gold font-bold font-montserrat">
             {title}
           </h2>
         </motion.div>
@@ -35,7 +35,7 @@ export default function StageWrapper({ title, icon, children, onClose, voice, on
           whileHover={{ scale: 1.1 }}
           whileTap={{ scale: 0.9 }}
         >
-          <span className="text-2xl">✕</span>
+          <span className="text-lg">✕</span>
         </motion.button>
       </div>
 
@@ -43,6 +43,20 @@ export default function StageWrapper({ title, icon, children, onClose, voice, on
       <div className="stage-content">
         {children}
       </div>
+
+      {/* Next Button */}
+      {onNext && (
+        <div className="stage-footer">
+          <motion.button
+            onClick={onNext}
+            className="stage-next-button"
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            Next →
+          </motion.button>
+        </div>
+      )}
     </div>
   );
 }

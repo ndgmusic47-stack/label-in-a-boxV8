@@ -298,6 +298,14 @@ export const api = {
     return result.data || result;
   },
 
+  getReleasePack: async (sessionId) => {
+    const response = await fetch(`${API_BASE}/release/pack?session_id=${sessionId}`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return handleResponse(response);
+  },
+
   generateReleaseCopy: async (sessionId, trackTitle, artistName, genre, mood, lyrics = '') => {
     const response = await fetch(`${API_BASE}/release/copy`, {
       method: 'POST',
@@ -443,6 +451,23 @@ export const api = {
         platform: platform || 'tiktok',
         schedule_time: scheduleTime,
       }),
+    });
+    return handleResponse(response);
+  },
+
+  saveScheduled: async (data) => {
+    const response = await fetch(`${API_BASE}/content/save-scheduled`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return handleResponse(response);
+  },
+
+  getScheduled: async (sessionId) => {
+    const response = await fetch(`${API_BASE}/content/get-scheduled?session_id=${sessionId}`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
     });
     return handleResponse(response);
   },

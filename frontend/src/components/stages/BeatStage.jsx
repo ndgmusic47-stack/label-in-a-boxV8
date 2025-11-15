@@ -4,7 +4,7 @@ import { api } from '../../utils/api';
 import StageWrapper from './StageWrapper';
 import WavesurferPlayer from '../WavesurferPlayer';
 
-export default function BeatStage({ sessionId, sessionData, updateSessionData, voice, onClose }) {
+export default function BeatStage({ sessionId, sessionData, updateSessionData, voice, onClose, onNext, completeStage }) {
   const [mood, setMood] = useState(sessionData.mood || 'energetic');
   const [promptText, setPromptText] = useState('');
   const [loading, setLoading] = useState(false);
@@ -76,6 +76,11 @@ export default function BeatStage({ sessionId, sessionData, updateSessionData, v
         console.error('Failed to reload credits:', err);
       }
       
+      // Mark beat stage as complete
+      if (completeStage) {
+        completeStage('beat');
+      }
+      
       voice.speak('Your beat is ready! Check it out.');
     } catch (err) {
       setError(err.message);
@@ -112,17 +117,18 @@ export default function BeatStage({ sessionId, sessionData, updateSessionData, v
       title="Create Beat" 
       icon="🎵" 
       onClose={onClose}
+      onNext={onNext}
       voice={voice}
       onVoiceCommand={handleVoiceCommand}
     >
       <div className="w-full h-full flex flex-col items-center justify-start p-6 md:p-10">
-        <div className="text-6xl mb-4">
+        <div className="icon-wrapper text-6xl mb-4">
           🎵
         </div>
 
         <div className="w-full max-w-md space-y-6">
           <div>
-            <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+            <label className="block text-xs text-studio-white/60 font-montserrat mb-2">
               Describe the beat you want
             </label>
             <input
@@ -137,7 +143,7 @@ export default function BeatStage({ sessionId, sessionData, updateSessionData, v
           </div>
 
           <div>
-            <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+            <label className="block text-xs text-studio-white/60 font-montserrat mb-2">
               Mood
             </label>
             <input
@@ -173,9 +179,9 @@ export default function BeatStage({ sessionId, sessionData, updateSessionData, v
               animate={{ opacity: 1, y: 0 }}
               className="p-4 bg-studio-gray/30 rounded-lg border border-studio-white/10"
             >
-              <p className="text-sm text-studio-white/80 mb-3 font-montserrat">Beat Ready</p>
+              <p className="text-sm text-studio-white/90 mb-3 font-montserrat">Beat Ready</p>
               {beatMetadata && (
-                <div className="text-sm text-studio-white/60 mb-3 font-poppins space-y-1">
+                <div className="text-sm text-studio-white/70 mb-3 font-poppins space-y-1">
                   {beatMetadata.duration && <div>• Length: {beatMetadata.duration}s</div>}
                   {beatMetadata.bpm && <div>• BPM: {beatMetadata.bpm}</div>}
                   {beatMetadata.key && <div>• Key: {beatMetadata.key}</div>}
@@ -199,7 +205,7 @@ export default function BeatStage({ sessionId, sessionData, updateSessionData, v
                       const next = await api.advanceStage(sessionId);
                       voice.speak('Beat selected. Moving to the next step.');
                     } catch (err) {
-                      console.error('Failed to advance stage:', err);
+                      // Failed to advance stage
                     }
                     onClose(); // Close the fullscreen stage
                   }}
@@ -225,12 +231,12 @@ export default function BeatStage({ sessionId, sessionData, updateSessionData, v
         {/* Credit Warning Modal */}
         {showModal && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <div className="bg-studio-gray border border-studio-white/20 rounded-lg p-6 max-w-md w-full mx-4">
-              <h3 className="text-lg font-montserrat text-studio-white mb-4">🎵 Generate a Beat?</h3>
-              <p className="text-studio-white/80 font-poppins mb-2">
+            <div className="modal-container bg-studio-gray border border-studio-white/20 rounded-lg max-w-md w-full mx-4">
+              <h3 className="text-lg text-studio-gold font-montserrat mb-0">🎵 Generate a Beat?</h3>
+              <p className="text-sm text-studio-white/70 font-poppins mb-0">
                 This will create a new AI beat using 1 credit.
               </p>
-              <p className="text-studio-white/60 font-poppins mb-4">
+              <p className="text-xs text-studio-white/60 font-poppins mb-0">
                 Credits remaining: {credits !== null ? credits : '...'}
               </p>
               <div className="flex gap-3">
@@ -259,7 +265,7 @@ export default function BeatStage({ sessionId, sessionData, updateSessionData, v
           </div>
         )}
 
-        <p className="text-sm text-studio-white/40 font-poppins text-center max-w-md">
+        <p className="text-xs text-studio-white/60 font-poppins text-center max-w-md">
           Try saying: "Create an energetic beat" or "Make a chill vibe"
         </p>
       </div>

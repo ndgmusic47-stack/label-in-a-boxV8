@@ -4,7 +4,7 @@ import { api } from '../../utils/api';
 import StageWrapper from './StageWrapper';
 import WavesurferPlayer from '../WavesurferPlayer';
 
-export default function MixStage({ sessionId, sessionData, updateSessionData, voice, onClose, completeStage }) {
+export default function MixStage({ sessionId, sessionData, updateSessionData, voice, onClose, onNext, completeStage }) {
   // V24: AI Mix & Master controls only
   const [aiMixEnabled, setAiMixEnabled] = useState(true);
   const [aiMasterEnabled, setAiMasterEnabled] = useState(true);
@@ -231,6 +231,7 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
       title="Mix & Master" 
       icon="🎛️" 
       onClose={onClose}
+      onNext={onNext}
       voice={voice}
     >
       <div className="stage-scroll-container">
@@ -248,7 +249,7 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
           {audioUrl && (
             <div className="w-full max-w-4xl p-4 rounded-lg border bg-studio-gray/30 border-studio-white/10">
               {sessionData.mixedFile ? (
-                <p className="text-sm text-studio-white/80 mb-3 font-montserrat">✓ Mix & Master Ready</p>
+                <p className="text-sm text-studio-white/90 mb-3 font-montserrat">✓ Mix & Master Ready</p>
               ) : (
                 <p className="text-xs text-studio-white/60 mb-2 font-montserrat">Audio Preview</p>
               )}
@@ -265,7 +266,7 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
           <div className="w-full max-w-4xl space-y-8">
             {/* Tone Controls (EQ) */}
             <div className="space-y-4">
-              <h3 className="text-sm opacity-80 font-montserrat">Tone Controls (EQ)</h3>
+              <h3 className="text-sm text-studio-white/70 font-montserrat">Tone Controls (EQ)</h3>
               <div className="grid grid-cols-3 gap-6">
                 <Slider
                   label="Low"
@@ -298,7 +299,7 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
 
             {/* Dynamics (Compression & Limiter) */}
             <div className="space-y-4">
-              <h3 className="text-sm opacity-80 font-montserrat">Dynamics (Compression & Limiter)</h3>
+              <h3 className="text-sm text-studio-white/70 font-montserrat">Dynamics (Compression & Limiter)</h3>
               <div className="grid grid-cols-2 gap-6">
                 <Slider
                   label="Compression"
@@ -322,7 +323,7 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
 
             {/* Reverb & Presets */}
             <div className="space-y-4">
-              <h3 className="text-sm opacity-80 font-montserrat">Reverb & Presets</h3>
+              <h3 className="text-sm text-studio-white/70 font-montserrat">Reverb & Presets</h3>
               <div className="grid grid-cols-2 gap-6">
                 <Slider
                   label="Reverb"
@@ -334,7 +335,7 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
                 />
                 
                 <div>
-                  <label className="text-sm font-poppins text-studio-white/80 mb-2 block">Preset</label>
+                  <label className="text-xs text-studio-white/60 font-poppins mb-2 block">Preset</label>
                   <div className="grid grid-cols-3 gap-2">
                     {['warm', 'clean', 'bright'].map((preset) => (
                       <button
@@ -356,11 +357,11 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
 
             {/* AI Processing Controls */}
             <div className="space-y-4">
-              <h3 className="text-sm opacity-80 font-montserrat">AI Processing</h3>
+              <h3 className="text-sm text-studio-white/70 font-montserrat">AI Processing</h3>
               
               {/* AI Mix Toggle */}
               <div className="flex items-center justify-between mb-2">
-                <label className="text-sm font-poppins text-studio-white/80">AI Mix</label>
+                <label className="text-xs text-studio-white/60 font-poppins">AI Mix</label>
                 <button
                   onClick={() => setAiMixEnabled(!aiMixEnabled)}
                   className={`w-12 h-6 rounded-full transition-colors ${
@@ -386,7 +387,7 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
               
               {/* AI Master Toggle */}
               <div className="flex items-center justify-between mb-2 mt-4">
-                <label className="text-sm font-poppins text-studio-white/80">AI Master</label>
+                <label className="text-xs text-studio-white/60 font-poppins">AI Master</label>
                 <button
                   onClick={() => setAiMasterEnabled(!aiMasterEnabled)}
                   className={`w-12 h-6 rounded-full transition-colors ${
@@ -467,10 +468,10 @@ function Slider({ label, value, onChange, min, max, step }) {
   return (
     <div>
       <div className="flex justify-between mb-2">
-        <label className="text-sm font-poppins text-studio-white/80">
+        <label className="text-xs text-studio-white/60 font-poppins">
           {label}
         </label>
-        <span className="text-sm font-mono text-studio-white/60">
+        <span className="text-xs font-mono text-studio-white/60">
           {value > 0 ? '+' : ''}{value.toFixed(1)}
         </span>
       </div>

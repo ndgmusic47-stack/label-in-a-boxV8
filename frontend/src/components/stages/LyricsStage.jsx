@@ -106,7 +106,7 @@ const estimateBarRhythm = (lyricsText) => {
   return rhythmMap;
 };
 
-export default function LyricsStage({ sessionId, sessionData, updateSessionData, voice, onClose }) {
+export default function LyricsStage({ sessionId, sessionData, updateSessionData, voice, onClose, onNext, completeStage }) {
   const [theme, setTheme] = useState('');
   const [loading, setLoading] = useState(false);
   const [lyrics, setLyrics] = useState(null);
@@ -132,6 +132,9 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
       
       setLyrics(result.lyrics);
       updateSessionData({ lyricsData: result.lyrics });
+      if (completeStage) {
+        completeStage('lyrics');
+      }
       voice.speak('Here are your lyrics generated from the beat.');
     } catch (err) {
       voice.speak('Sorry, couldn\'t generate lyrics right now.');
@@ -155,6 +158,9 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
       
       setLyrics(result.lyrics);
       updateSessionData({ lyricsData: result.lyrics });
+      if (completeStage) {
+        completeStage('lyrics');
+      }
       voice.speak('Here are your free lyrics.');
     } catch (err) {
       voice.speak('Sorry, couldn\'t generate lyrics right now.');
@@ -184,7 +190,9 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
 
       setLyrics(result.lyrics);
       updateSessionData({ lyricsData: result.lyrics });
-
+      if (completeStage) {
+        completeStage('lyrics');
+      }
       voice.speak('Here are your lyrics based on the session beat.');
     } catch (err) {
       voice.speak("Couldn't generate lyrics from the session beat.");
@@ -212,6 +220,9 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
       
       setLyrics(result.lyrics);
       updateSessionData({ lyricsData: result.lyrics });
+      if (completeStage) {
+        completeStage('lyrics');
+      }
       voice.speak('Here are your lyrics. Let me read them to you.');
     } catch (err) {
       voice.speak('Sorry, couldn\'t generate lyrics right now.');
@@ -279,6 +290,7 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
       title="Write Lyrics" 
       icon="📝" 
       onClose={onClose}
+      onNext={onNext}
       voice={voice}
     >
       <div className="stage-scroll-container">
@@ -292,12 +304,12 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
             )}
 
             <div className="w-full max-w-2xl space-y-6">
-              <div className="text-6xl text-center mb-4">
+              <div className="icon-wrapper text-6xl text-center mb-4">
                 📝
               </div>
 
               <div>
-                <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                <label className="block text-xs text-studio-white/60 font-montserrat mb-2">
                   Upload Beat (for Mode 1)
                 </label>
                 <input
@@ -310,7 +322,7 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
               </div>
 
               <div>
-                <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                <label className="block text-xs text-studio-white/60 font-montserrat mb-2">
                   Theme (for Mode 2)
                 </label>
                 <input
@@ -386,7 +398,7 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
                         return (
                           <React.Fragment key={idx}>
                             {hasPreviousOption && <br />}
-                            <p className="text-studio-white font-poppins text-base leading-relaxed">
+                            <p className="text-sm text-studio-white/90 font-poppins leading-relaxed">
                               <strong>{optionMatch[1]}</strong>
                               {optionMatch[2] && ` ${optionMatch[2]}`}
                             </p>
@@ -394,7 +406,7 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
                         );
                       }
                       return (
-                        <p key={idx} className="text-studio-white font-poppins text-base leading-relaxed">
+                        <p key={idx} className="text-sm text-studio-white/90 font-poppins leading-relaxed">
                           {line || '\u00A0'}
                         </p>
                       );
@@ -404,10 +416,10 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
                   <div className="space-y-8">
                     {lyrics.verse && (
                       <div className="lyrics-section">
-                        <h3 className="text-studio-red font-montserrat font-semibold text-lg mb-4">Verse</h3>
+                        <h3 className="text-lg text-studio-gold font-montserrat font-semibold mb-4">Verse</h3>
                         <div className="space-y-2">
                           {lyrics.verse.split('\n').map((line, idx) => (
-                            <p key={idx} className="text-studio-white font-poppins text-base leading-relaxed">
+                            <p key={idx} className="text-sm text-studio-white/90 font-poppins leading-relaxed">
                               {line || '\u00A0'}
                             </p>
                           ))}
@@ -416,10 +428,10 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
                     )}
                     {lyrics.chorus && (
                       <div className="lyrics-section">
-                        <h3 className="text-studio-red font-montserrat font-semibold text-lg mb-4">Chorus</h3>
+                        <h3 className="text-lg text-studio-gold font-montserrat font-semibold mb-4">Chorus</h3>
                         <div className="space-y-2">
                           {lyrics.chorus.split('\n').map((line, idx) => (
-                            <p key={idx} className="text-studio-white font-poppins text-base leading-relaxed">
+                            <p key={idx} className="text-sm text-studio-white/90 font-poppins leading-relaxed">
                               {line || '\u00A0'}
                             </p>
                           ))}
@@ -428,10 +440,10 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
                     )}
                     {lyrics.bridge && (
                       <div className="lyrics-section">
-                        <h3 className="text-studio-red font-montserrat font-semibold text-lg mb-4">Bridge</h3>
+                        <h3 className="text-lg text-studio-gold font-montserrat font-semibold mb-4">Bridge</h3>
                         <div className="space-y-2">
                           {lyrics.bridge.split('\n').map((line, idx) => (
-                            <p key={idx} className="text-studio-white font-poppins text-base leading-relaxed">
+                            <p key={idx} className="text-sm text-studio-white/90 font-poppins leading-relaxed">
                               {line || '\u00A0'}
                             </p>
                           ))}
@@ -444,7 +456,7 @@ export default function LyricsStage({ sessionId, sessionData, updateSessionData,
               
               <div className="w-full max-w-2xl space-y-4">
                 <div>
-                  <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                  <label className="block text-xs text-studio-white/60 font-montserrat mb-2">
                     Refine lyrics (give instructions)
                   </label>
                   <textarea

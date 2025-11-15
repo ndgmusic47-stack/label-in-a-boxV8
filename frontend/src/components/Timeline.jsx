@@ -4,6 +4,7 @@ import '../styles/Timeline.css';
 
 const Timeline = forwardRef(({ currentStage, activeStage, completedStages = [], onStageClick, showBackButton, onBackToTimeline }, ref) => {
   const [showGoalModal, setShowGoalModal] = useState(false);
+  const [wasAllComplete, setWasAllComplete] = useState(false);
   
   const stages = [
     { id: 'beat', icon: '🎵', label: 'Beat', dept: 'Echo' },
@@ -16,8 +17,8 @@ const Timeline = forwardRef(({ currentStage, activeStage, completedStages = [], 
   ];
 
   const getStageStatus = (stageId) => {
-    if (completedStages.includes(stageId)) return 'completed';
-    if (stageId === currentStage) return 'active';
+    // Phase 1: Check object format for tick system
+    if (completedStages[stageId]) return 'completed';
     return 'upcoming';
   };
 
@@ -35,16 +36,25 @@ const Timeline = forwardRef(({ currentStage, activeStage, completedStages = [], 
     return stage ? prompts[currentStage] || 'Continue your creative journey' : '';
   };
 
-  const progressPercentage = (completedStages.length / stages.length) * 100;
-  const isGoalReached = completedStages.length === stages.length;
+  // Phase 1: Calculate progress from object format
+  const completedCount = Object.keys(completedStages).filter(key => completedStages[key]).length;
+  const progressPercentage = (completedCount / stages.length) * 100;
+  const isGoalReached = completedCount === stages.length;
 
+  // Fix Goal Reached animation trigger - only fire once when transitioning from not-all-complete to all-complete
   useEffect(() => {
-    if (isGoalReached && !showGoalModal) {
+    if (isGoalReached && !wasAllComplete && !showGoalModal) {
       // Show modal after short delay
-      const timer = setTimeout(() => setShowGoalModal(true), 800);
+      const timer = setTimeout(() => {
+        setShowGoalModal(true);
+        setWasAllComplete(true);
+      }, 800);
       return () => clearTimeout(timer);
+    } else if (!isGoalReached) {
+      // Reset when not all complete
+      setWasAllComplete(false);
     }
-  }, [isGoalReached]);
+  }, [isGoalReached, wasAllComplete, showGoalModal]);
 
   const handleRestartCycle = () => {
     setShowGoalModal(false);
@@ -78,13 +88,14 @@ const Timeline = forwardRef(({ currentStage, activeStage, completedStages = [], 
         
         {stages.map((stage, index) => {
           const status = getStageStatus(stage.id);
-          const isActive = activeStage === stage.id || status === 'active';
+          // Fix glow behavior - only clicked module should glow (not based on completion or currentStage)
+          const isActive = activeStage === stage.id;
           const isCompleted = status === 'completed';
           
           return (
             <motion.div
               key={stage.id}
-              className={`timeline-icon ${status}`}
+              className={`stage ${status}`}
               onClick={() => onStageClick(stage.id)}
               whileHover={{ scale: 1.1 }}
               whileTap={{ scale: 0.95 }}
@@ -93,25 +104,25 @@ const Timeline = forwardRef(({ currentStage, activeStage, completedStages = [], 
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: index * 0.1 }}
             >
-              {isActive && (
-                <motion.div
-                  className="pulse-ring"
-                  animate={{
-                    scale: [1, 1.8],
-                    opacity: [0.5, 0]
-                  }}
-                  transition={{
-                    duration: 2.5,
-                    repeat: Infinity,
-                    ease: 'easeOut',
-                    repeatDelay: 0.3
-                  }}
-                />
-              )}
-              
-              <div className="stage-icon">{stage.icon}</div>
+              <div className={`timeline-icon ${isActive ? 'active' : ''} ${status}`}>
+                {isActive && (
+                  <motion.div
+                    className="pulse-ring"
+                    animate={{
+                      scale: [1, 1.8],
+                      opacity: [0.5, 0]
+                    }}
+                    transition={{
+                      duration: 2.5,
+                      repeat: Infinity,
+                      ease: 'easeOut',
+                      repeatDelay: 0.3
+                    }}
+                  />
+                )}
+                <div className="stage-icon">{stage.icon}</div>
+              </div>
               <div className="stage-label">{stage.label}</div>
-              <div className="stage-dept">{stage.dept}</div>
               
               {isCompleted && (
                 <motion.div
@@ -138,7 +149,7 @@ const Timeline = forwardRef(({ currentStage, activeStage, completedStages = [], 
         </motion.div>
 
         <div className="timeline-progress-text">
-          {completedStages.length} of {stages.length} stages complete
+          {completedCount} of {stages.length} stages complete
           {progressPercentage === 100 && (
             <span className="celebration"> — Release Ready! 🎉</span>
           )}

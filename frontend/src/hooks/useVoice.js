@@ -79,40 +79,51 @@ export const useVoice = (sessionId = null) => {
     }
   }, [recognition, isListening]);
 
-  const speak = useCallback(async (text, persona = "nova") => {
+  const speak = useCallback(async (text, persona = null) => {
     try {
-      // Stop any currently playing audio to prevent overlapping
-      if (window.currentVoiceAudio) {
-        window.currentVoiceAudio.pause();
-        window.currentVoiceAudio.currentTime = 0;
-        window.currentVoiceAudio = null;
-      }
+      // Use selected persona from VoiceControl if available, otherwise use passed persona or default to "nova"
+      const selectedPersona = window.selectedVoicePersona || persona || "nova";
 
       // Call backend POST /api/voices/say with { text, persona, session_id }
-      const result = await api.voiceSpeak(persona, text, sessionId);
+      const result = await api.voiceSpeak(selectedPersona, text, sessionId);
       
       // Parse returned MP3 URL
       if (result && result.url) {
-        // Instantiate a new HTMLAudioElement and play the audio
-        const audio = new Audio(result.url);
-        audio.volume = isMutedRef.current ? 0 : 1.0;
-        
-        // Store reference to global audio element (ensure only one plays at a time)
-        window.currentVoiceAudio = audio;
-        
-        // Play audio
-        await audio.play();
-        
-        return new Promise((resolve, reject) => {
-          audio.onended = () => {
-            window.currentVoiceAudio = null;
-            resolve();
-          };
-          audio.onerror = (err) => {
-            window.currentVoiceAudio = null;
-            reject(err);
-          };
-        });
+        // Use global audio system from VoiceControl
+        if (window.playVoiceGlobal) {
+          // Get current volume from global audio if available, otherwise use 1.0
+          const globalAudio = window.getGlobalVoiceAudio ? window.getGlobalVoiceAudio() : null;
+          const currentVolume = globalAudio ? globalAudio.volume : 1.0;
+          
+          // Play using global system
+          window.playVoiceGlobal(result.url, currentVolume, text, selectedPersona);
+          
+          // Return promise that resolves when audio ends
+          return new Promise((resolve, reject) => {
+            const checkEnded = setInterval(() => {
+              const audio = window.getGlobalVoiceAudio ? window.getGlobalVoiceAudio() : null;
+              if (!audio || audio.ended || audio.paused) {
+                clearInterval(checkEnded);
+                if (audio && audio.ended) {
+                  resolve();
+                } else if (audio && audio.error) {
+                  reject(new Error('Audio playback error'));
+                } else {
+                  resolve();
+                }
+              }
+            }, 100);
+            
+            // Timeout after 30 seconds
+            setTimeout(() => {
+              clearInterval(checkEnded);
+              resolve();
+            }, 30000);
+          });
+        } else {
+          // Fallback if VoiceControl not loaded yet
+          throw new Error('Voice system not initialized');
+        }
       }
       throw new Error('No audio URL returned from backend');
     } catch (err) {
@@ -129,11 +140,9 @@ export const useVoice = (sessionId = null) => {
     } catch (err) {
       console.error('Backend voice stop failed:', err);
     }
-    // Apply change to window.currentVoiceAudio
-    if (window.currentVoiceAudio) {
-      window.currentVoiceAudio.pause();
-      window.currentVoiceAudio.currentTime = 0;
-      window.currentVoiceAudio = null;
+    // Use global stop function
+    if (window.stopVoiceGlobal) {
+      window.stopVoiceGlobal();
     }
   }, [sessionId]);
 
@@ -144,17 +153,19 @@ export const useVoice = (sessionId = null) => {
     } catch (err) {
       console.error('Backend voice mute failed:', err);
     }
-    // Apply change to window.currentVoiceAudio
+    // Apply change to global audio
     isMutedRef.current = true;
-    if (window.currentVoiceAudio) {
-      window.currentVoiceAudio.volume = 0;
+    const globalAudio = window.getGlobalVoiceAudio ? window.getGlobalVoiceAudio() : null;
+    if (globalAudio) {
+      globalAudio.muted = true;
     }
   }, [sessionId]);
 
   const unmuteSpeaking = useCallback(() => {
     isMutedRef.current = false;
-    if (window.currentVoiceAudio) {
-      window.currentVoiceAudio.volume = 1.0;
+    const globalAudio = window.getGlobalVoiceAudio ? window.getGlobalVoiceAudio() : null;
+    if (globalAudio) {
+      globalAudio.muted = false;
     }
   }, []);
 
@@ -165,16 +176,18 @@ export const useVoice = (sessionId = null) => {
     } catch (err) {
       console.error('Backend voice pause failed:', err);
     }
-    // Apply change to window.currentVoiceAudio
-    if (window.currentVoiceAudio && !window.currentVoiceAudio.paused) {
-      window.currentVoiceAudio.pause();
+    // Apply change to global audio
+    const globalAudio = window.getGlobalVoiceAudio ? window.getGlobalVoiceAudio() : null;
+    if (globalAudio && !globalAudio.paused) {
+      globalAudio.pause();
       isPausedRef.current = true;
     }
   }, [sessionId]);
 
   const resumeSpeaking = useCallback(() => {
-    if (window.currentVoiceAudio && window.currentVoiceAudio.paused) {
-      window.currentVoiceAudio.play();
+    const globalAudio = window.getGlobalVoiceAudio ? window.getGlobalVoiceAudio() : null;
+    if (globalAudio && globalAudio.paused) {
+      globalAudio.play();
       isPausedRef.current = false;
     }
   }, []);

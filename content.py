@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional, Dict, List
 from datetime import datetime
 
-from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Body
+from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Body, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import requests
@@ -545,4 +545,85 @@ async def schedule_video(request: ScheduleRequest):
     except Exception as e:
         logger.error(f"Video scheduling failed: {e}", exc_info=True)
         return error_response(f"Video scheduling failed: {str(e)}")
+
+# ============================================================================
+# POST /content/save-scheduled - Save Scheduled Post
+# ============================================================================
+
+class SaveScheduledRequest(BaseModel):
+    sessionId: str = Field(..., description="Session ID")
+    platform: str = Field(..., description="Platform (tiktok, shorts, reels)")
+    dateTime: Optional[str] = Field(None, description="ISO datetime string")
+    time: Optional[str] = Field(None, description="ISO datetime string (legacy)")
+    caption: Optional[str] = Field(None, description="Caption text")
+
+@content_router.post("/save-scheduled")
+async def save_scheduled(request: SaveScheduledRequest):
+    """Save scheduled post to project memory"""
+    session_id = request.sessionId
+    
+    # Validate required fields
+    if not request.platform:
+        return error_response("Platform is required")
+    
+    # Use dateTime if provided, otherwise fall back to time
+    scheduled_time = request.dateTime or request.time
+    if not scheduled_time:
+        return error_response("dateTime is required")
+    
+    session_path = get_session_media_path(session_id)
+    schedule_file = session_path / "schedule.json"
+    
+    # Load existing schedule
+    if schedule_file.exists():
+        with open(schedule_file, 'r') as f:
+            schedule = json.load(f)
+    else:
+        schedule = []
+    
+    # Create post entry
+    post = {
+        "post_id": f"{request.platform}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        "platform": request.platform,
+        "dateTime": scheduled_time,
+        "time": scheduled_time,  # Keep for backward compatibility
+        "caption": request.caption or "",
+        "created_at": datetime.now().isoformat(),
+        "status": "scheduled"
+    }
+    schedule.append(post)
+    
+    # Save
+    with open(schedule_file, 'w') as f:
+        json.dump(schedule, f, indent=2)
+    
+    # Update project memory
+    memory = get_or_create_project_memory(session_id, Path("./media"))
+    memory.update("contentScheduled", True)
+    
+    return success_response(
+        data={"post_id": post["post_id"], "status": "saved"},
+        message="Scheduled post saved"
+    )
+
+# ============================================================================
+# GET /content/get-scheduled - Get Scheduled Posts
+# ============================================================================
+
+@content_router.get("/get-scheduled")
+async def get_scheduled(session_id: str = Query(..., description="Session ID")):
+    """Get all scheduled posts for a session"""
+    session_path = get_session_media_path(session_id)
+    schedule_file = session_path / "schedule.json"
+    
+    if not schedule_file.exists():
+        return success_response(data=[], message="No scheduled posts")
+    
+    try:
+        with open(schedule_file, 'r') as f:
+            schedule = json.load(f)
+        return success_response(data=schedule, message="Scheduled posts retrieved")
+    except Exception as e:
+        logger.error(f"Failed to load schedule: {e}")
+        return success_response(data=[], message="No scheduled posts")
 

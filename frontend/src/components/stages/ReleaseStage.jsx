@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { api } from '../../utils/api';
 import StageWrapper from './StageWrapper';
 
-export default function ReleaseStage({ sessionData, updateSessionData, voice, onClose, sessionId, completeStage }) {
+export default function ReleaseStage({ sessionData, updateSessionData, voice, onClose, onNext, sessionId, completeStage }) {
   // Form inputs
   const [trackTitle, setTrackTitle] = useState(sessionData.trackTitle || sessionData.metadata?.track_title || '');
   const [artistName, setArtistName] = useState(sessionData.artistName || sessionData.metadata?.artist_name || 'NP22');
@@ -13,16 +13,19 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
   const [explicit, setExplicit] = useState(sessionData.explicit || false);
   const [coverStyle, setCoverStyle] = useState('realistic');
   
-  // Cover art
+  // Cover art generation
   const [coverImages, setCoverImages] = useState([]);
   const [selectedCover, setSelectedCover] = useState(null);
   const [generatingCover, setGeneratingCover] = useState(false);
   
-  // Release files state
-  const [releaseFiles, setReleaseFiles] = useState([]);
-  const [releaseCopyFiles, setReleaseCopyFiles] = useState(null);
+  // Release pack data
+  const [releasePack, setReleasePack] = useState(null);
+  const [loadingPack, setLoadingPack] = useState(false);
+  
+  // Generation states
   const [generatingCopy, setGeneratingCopy] = useState(false);
-  const [zipUrl, setZipUrl] = useState(null);
+  const [generatingMetadata, setGeneratingMetadata] = useState(false);
+  const [generatingLyricsPDF, setGeneratingLyricsPDF] = useState(false);
   
   // Genre and mood options
   const genreOptions = ['hip hop', 'pop', 'rock', 'electronic', 'r&b', 'indie', 'country', 'jazz', 'classical'];
@@ -35,6 +38,9 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
     { value: 'purple-gold aesthetic', label: 'Purple-Gold Aesthetic' }
   ];
 
+  // Ensure we use the correct sessionId from props
+  const currentSessionId = sessionId;
+
   // Load existing data from session
   useEffect(() => {
     if (sessionData.metadata) {
@@ -45,26 +51,50 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
     }
   }, [sessionData]);
 
-  // Fetch release files dynamically
-  const fetchReleaseFiles = async () => {
+  // Fetch release pack data
+  const fetchReleasePack = async () => {
+    if (!currentSessionId) return;
+    
+    setLoadingPack(true);
     try {
-      const res = await api.listReleaseFiles(sessionId);
-      if (res && res.files) {
-        setReleaseFiles(res.files);
-      } else if (Array.isArray(res)) {
-        setReleaseFiles(res);
+      const pack = await api.getReleasePack(currentSessionId);
+      if (pack) {
+        setReleasePack(pack);
+        
+        // Set cover art if available
+        if (pack.coverArt) {
+          setSelectedCover(pack.coverArt);
+        }
       }
     } catch (err) {
-      console.error('Failed to fetch release files:', err);
+      console.error('Failed to fetch release pack:', err);
+    } finally {
+      setLoadingPack(false);
     }
   };
 
-  // Load release files on mount
+  // Load release pack on mount and when sessionId changes
   useEffect(() => {
-    if (sessionId) {
-      fetchReleaseFiles();
+    if (currentSessionId) {
+      fetchReleasePack();
     }
-  }, [sessionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSessionId]);
+
+  // Helper to get complete URL for files
+  const getFileUrl = (filePath) => {
+    if (!filePath) return null;
+    // If already a complete URL, return as is
+    if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
+      return filePath;
+    }
+    // If starts with /media, prepend API base
+    if (filePath.startsWith('/media')) {
+      return `/api${filePath}`;
+    }
+    // Otherwise, assume it's a relative path
+    return `/api${filePath}`;
+  };
 
   const handleGenerateCover = async () => {
     if (!trackTitle || !artistName) {
@@ -75,13 +105,15 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
     setGeneratingCover(true);
     try {
       voice.speak("Generating cover art...");
-      const result = await api.generateReleaseCover(sessionId, trackTitle, artistName, genre, mood, coverStyle);
+      const result = await api.generateReleaseCover(currentSessionId, trackTitle, artistName, genre, mood, coverStyle);
       
       if (result.data && result.data.images && result.data.images.length > 0) {
         setCoverImages(result.data.images);
-        setSelectedCover(result.data.images[0]); // Select first by default
+        setSelectedCover(result.data.images[0]);
         // Auto-select first cover
-        await api.selectReleaseCover(sessionId, result.data.images[0]);
+        await api.selectReleaseCover(currentSessionId, result.data.images[0]);
+        // Refresh release pack
+        await fetchReleasePack();
         voice.speak(`Generated ${result.data.images.length} cover art options`);
       } else {
         voice.speak('Failed to generate cover art');
@@ -104,20 +136,10 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
     try {
       voice.speak("Generating release copy...");
       const lyrics = sessionData.lyricsData || sessionData.lyrics || '';
-      const result = await api.generateReleaseCopy(sessionId, trackTitle, artistName, genre, mood, lyrics);
+      await api.generateReleaseCopy(currentSessionId, trackTitle, artistName, genre, mood, lyrics);
       
-      // Update release copy files state
-      if (result.data) {
-        setReleaseCopyFiles({
-          description_url: result.data.description_url,
-          pitch_url: result.data.pitch_url,
-          tagline_url: result.data.tagline_url
-        });
-      }
-      
-      // Refresh release files list
-      await fetchReleaseFiles();
-      
+      // Refresh release pack
+      await fetchReleasePack();
       voice.speak("Release copy generated");
     } catch (err) {
       console.error('Copy generation error:', err);
@@ -128,18 +150,20 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
   };
 
   const handleGenerateMetadata = async () => {
+    setGeneratingMetadata(true);
     try {
-      const result = await api.generateReleaseMetadata(
-        sessionId, trackTitle, artistName, mood, genre, explicit, releaseDate
+      await api.generateReleaseMetadata(
+        currentSessionId, trackTitle, artistName, mood, genre, explicit, releaseDate
       );
       
-      // Refresh release files list
-      await fetchReleaseFiles();
-      
+      // Refresh release pack
+      await fetchReleasePack();
       voice.speak("Metadata generated");
     } catch (err) {
       console.error('Metadata generation error:', err);
       voice.speak('Failed to generate metadata');
+    } finally {
+      setGeneratingMetadata(false);
     }
   };
 
@@ -151,25 +175,26 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
         return;
       }
       
-      await api.generateLyricsPDF(sessionId, trackTitle, artistName, lyrics);
+      setGeneratingLyricsPDF(true);
+      await api.generateLyricsPDF(currentSessionId, trackTitle, artistName, lyrics);
       
-      // Refresh release files list
-      await fetchReleaseFiles();
-      
+      // Refresh release pack
+      await fetchReleasePack();
       voice.speak("Lyrics PDF generated");
     } catch (err) {
       console.error('Lyrics PDF generation error:', err);
       voice.speak('Failed to generate lyrics PDF');
+    } finally {
+      setGeneratingLyricsPDF(false);
     }
   };
 
   const handleSelectCover = async (url) => {
     setSelectedCover(url);
-    // Save selected cover to backend
     try {
-      await api.selectReleaseCover(sessionId, url);
-      // Refresh release files list
-      await fetchReleaseFiles();
+      await api.selectReleaseCover(currentSessionId, url);
+      // Refresh release pack
+      await fetchReleasePack();
     } catch (err) {
       console.error('Failed to select cover:', err);
     }
@@ -178,11 +203,15 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
   const handleDownloadAll = async () => {
     try {
       voice.speak("Preparing release pack...");
-      const result = await api.downloadAllReleaseFiles(sessionId);
-      if (result.zip_url) {
-        setZipUrl(result.zip_url);
+      const result = await api.downloadAllReleaseFiles(currentSessionId);
+      if (result && result.zip_url) {
+        const zipUrl = getFileUrl(result.zip_url);
         // Trigger download
-        window.open(result.zip_url, '_blank');
+        window.open(zipUrl, '_blank');
+        // Mark release stage as complete ONLY after successful ZIP generation
+        if (completeStage) {
+          completeStage('release');
+        }
         voice.speak("Release pack ready");
       }
     } catch (err) {
@@ -191,12 +220,14 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
     }
   };
 
+  const coverArtUrl = releasePack?.coverArt ? getFileUrl(releasePack.coverArt) : null;
 
   return (
     <StageWrapper 
       title="Release Pack" 
       icon="📦" 
       onClose={onClose}
+      onNext={onNext}
       voice={voice}
     >
       <div className="stage-scroll-container">
@@ -204,7 +235,7 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
           
           {/* Cover Art Preview Section */}
           <div className="space-y-4">
-            <h2 className="font-montserrat text-xl text-studio-white font-semibold">Cover Art Preview</h2>
+            <h2 className="text-lg text-studio-gold font-montserrat font-semibold">Cover Art Preview</h2>
             
             {coverImages.length > 0 ? (
               <div className="grid grid-cols-2 gap-4">
@@ -220,13 +251,17 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
                   >
-                    <img src={url} alt={`Cover option ${index + 1}`} className="w-full h-full object-cover" />
+                    <img src={getFileUrl(url)} alt={`Cover option ${index + 1}`} className="w-full h-full object-cover" />
                   </motion.div>
                 ))}
               </div>
+            ) : coverArtUrl ? (
+              <div className="aspect-square max-w-md mx-auto rounded-lg overflow-hidden border border-studio-white/10">
+                <img src={coverArtUrl} alt="Selected cover art" className="w-full h-full object-cover" />
+              </div>
             ) : (
               <div className="aspect-square max-w-md mx-auto bg-studio-gray/30 rounded-lg border border-studio-white/10 flex items-center justify-center">
-                <p className="text-studio-white/40 font-poppins">No cover art generated yet</p>
+                <p className="text-sm text-studio-white/60 font-poppins">No cover art generated yet</p>
               </div>
             )}
           </div>
@@ -235,7 +270,7 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                <label className="block text-xs text-studio-white/60 font-montserrat mb-2">
                   Track Title
                 </label>
                 <input
@@ -249,7 +284,7 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
               </div>
 
               <div>
-                <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                <label className="block text-xs text-studio-white/60 font-montserrat mb-2">
                   Artist Name
                 </label>
                 <input
@@ -265,7 +300,7 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                <label className="block text-xs text-studio-white/60 font-montserrat mb-2">
                   Genre
                 </label>
                 <select
@@ -281,7 +316,7 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
               </div>
 
               <div>
-                <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                <label className="block text-xs text-studio-white/60 font-montserrat mb-2">
                   Mood
                 </label>
                 <select
@@ -299,7 +334,7 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                <label className="block text-xs text-studio-white/60 font-montserrat mb-2">
                   Release Date
                 </label>
                 <input
@@ -312,7 +347,7 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
               </div>
 
               <div>
-                <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+                <label className="block text-xs text-studio-white/60 font-montserrat mb-2">
                   Explicit
                 </label>
                 <div className="flex items-center gap-4 mt-2">
@@ -343,7 +378,7 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
 
           {/* Cover Style Selection */}
           <div>
-            <label className="block text-sm font-montserrat text-studio-white/60 mb-2">
+            <label className="block text-xs text-studio-white/60 font-montserrat mb-2">
               Cover Art Style
             </label>
             <select
@@ -389,102 +424,159 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <motion.button
               onClick={handleGenerateLyricsPDF}
-              disabled={!sessionData.lyricsData && !sessionData.lyrics}
+              disabled={generatingLyricsPDF || (!sessionData.lyricsData && !sessionData.lyrics)}
               className="w-full py-3 rounded-lg font-montserrat font-semibold bg-studio-gray/50
                        hover:bg-studio-gray/70 text-studio-white transition-all duration-300
                        disabled:opacity-50 disabled:cursor-not-allowed"
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
             >
-              📄 Generate Lyrics PDF
+              {generatingLyricsPDF ? '📄 Generating...' : '📄 Generate Lyrics PDF'}
             </motion.button>
 
             <motion.button
               onClick={handleGenerateMetadata}
-              disabled={!trackTitle || !artistName}
+              disabled={generatingMetadata || !trackTitle || !artistName}
               className="w-full py-3 rounded-lg font-montserrat font-semibold bg-studio-gray/50
                        hover:bg-studio-gray/70 text-studio-white transition-all duration-300
                        disabled:opacity-50 disabled:cursor-not-allowed"
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
             >
-              📋 Generate Metadata
+              {generatingMetadata ? '📋 Generating...' : '📋 Generate Metadata'}
             </motion.button>
           </div>
 
           {/* Release Pack Files Section */}
           <div className="space-y-6 border-t border-studio-white/10 pt-6">
-            <h2 className="font-montserrat text-xl text-studio-white font-semibold">Release Pack Files</h2>
+            <h3 className="text-lg text-studio-gold font-montserrat mb-2">
+              Your Release Pack
+            </h3>
+            <p className="text-sm text-studio-white/70 font-poppins mb-4">
+              Everything you need to publish: artwork, metadata, audio, and lyrics.
+            </p>
 
-            {releaseFiles.length > 0 ? (
-              <div className="space-y-2">
-                {releaseFiles
-                  .filter(f => f.includes("final_cover"))
-                  .map((f, idx) => (
-                    <a key={idx} href={f} download className="text-sm text-studio-white/70 underline">
-                      {f.split("/").pop()}
-                    </a>
-                  ))}
-                {releaseFiles.map((file, idx) => {
-                  const fileName = file.split('/').pop();
-                  return (
-                    <a
-                      key={idx}
-                      href={file}
-                      download
-                      className="block px-4 py-2 bg-studio-gray/30 hover:bg-studio-gray/50 rounded-lg
-                               text-studio-white font-poppins text-sm transition-all"
+            {loadingPack ? (
+              <p className="text-sm text-studio-white/60 font-poppins">Loading release pack...</p>
+            ) : releasePack && (
+              <div className="space-y-4">
+                {/* Cover Art */}
+                {releasePack.coverArt && (
+                  <div className="space-y-2">
+                    <h4 className="text-sm text-studio-white/90 font-montserrat">Cover Art</h4>
+                    <div className="aspect-square max-w-xs rounded-lg overflow-hidden border border-studio-white/10">
+                      <img 
+                        src={getFileUrl(releasePack.coverArt)} 
+                        alt="Release cover art" 
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          console.error('Failed to load cover art:', releasePack.coverArt);
+                          e.target.style.display = 'none';
+                        }}
+                      />
+                    </div>
+                    <a 
+                      href={getFileUrl(releasePack.coverArt)} 
+                      download 
+                      className="underline text-studio-gold text-sm hover:text-studio-gold/80"
                     >
-                      • {fileName} (Download)
+                      Download Cover Art
                     </a>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="text-studio-white/40 font-poppins">No release files yet. Generate cover art, metadata, copy, or lyrics to see files here.</p>
-            )}
+                  </div>
+                )}
 
-            {/* Release Copy Display (from state) */}
-            {releaseCopyFiles && (
-              <div>
-                <h3 className="font-montserrat text-studio-white/80 mb-2">Release Copy:</h3>
-                <div className="space-y-2">
-                  {releaseCopyFiles.description_url && (
+                {/* Release Copy */}
+                {releasePack.releaseCopy && (
+                  <div className="space-y-2">
+                    <h4 className="text-sm text-studio-white/90 font-montserrat">Release Copy</h4>
+                    <div className="space-y-2">
+                      {releasePack.releaseCopy.description && (
+                        <a
+                          href={getFileUrl(releasePack.releaseCopy.description)}
+                          download
+                          className="block px-4 py-2 bg-studio-gray/30 hover:bg-studio-gray/50 rounded-lg
+                                   text-studio-white font-poppins text-sm transition-all underline text-studio-gold"
+                        >
+                          Download Release Description
+                        </a>
+                      )}
+                      {releasePack.releaseCopy.pitch && (
+                        <a
+                          href={getFileUrl(releasePack.releaseCopy.pitch)}
+                          download
+                          className="block px-4 py-2 bg-studio-gray/30 hover:bg-studio-gray/50 rounded-lg
+                                   text-studio-white font-poppins text-sm transition-all underline text-studio-gold"
+                        >
+                          Download Press Pitch
+                        </a>
+                      )}
+                      {releasePack.releaseCopy.tagline && (
+                        <a
+                          href={getFileUrl(releasePack.releaseCopy.tagline)}
+                          download
+                          className="block px-4 py-2 bg-studio-gray/30 hover:bg-studio-gray/50 rounded-lg
+                                   text-studio-white font-poppins text-sm transition-all underline text-studio-gold"
+                        >
+                          Download Tagline
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Metadata */}
+                {releasePack.metadataFile && (
+                  <div className="space-y-2">
+                    <h4 className="text-sm text-studio-white/90 font-montserrat">Metadata</h4>
                     <a
-                      href={releaseCopyFiles.description_url}
+                      href={getFileUrl(releasePack.metadataFile)}
                       download
                       className="block px-4 py-2 bg-studio-gray/30 hover:bg-studio-gray/50 rounded-lg
-                               text-studio-white font-poppins text-sm transition-all"
+                               text-studio-white font-poppins text-sm transition-all underline text-studio-gold"
                     >
-                      • release_description.txt (Download)
+                      Download Metadata
                     </a>
-                  )}
-                  {releaseCopyFiles.pitch_url && (
+                  </div>
+                )}
+
+                {/* Lyrics PDF */}
+                {releasePack.lyricsPdf && (
+                  <div className="space-y-2">
+                    <h4 className="text-sm text-studio-white/90 font-montserrat">Lyrics PDF</h4>
                     <a
-                      href={releaseCopyFiles.pitch_url}
+                      href={getFileUrl(releasePack.lyricsPdf)}
                       download
                       className="block px-4 py-2 bg-studio-gray/30 hover:bg-studio-gray/50 rounded-lg
-                               text-studio-white font-poppins text-sm transition-all"
+                               text-studio-white font-poppins text-sm transition-all underline text-studio-gold"
                     >
-                      • press_pitch.txt (Download)
+                      Download Lyrics PDF
                     </a>
-                  )}
-                  {releaseCopyFiles.tagline_url && (
+                  </div>
+                )}
+
+                {/* Release Audio */}
+                {releasePack.releaseAudio && (
+                  <div className="space-y-2">
+                    <h4 className="text-sm text-studio-white/90 font-montserrat">Final Release Audio</h4>
                     <a
-                      href={releaseCopyFiles.tagline_url}
+                      href={getFileUrl(releasePack.releaseAudio)}
                       download
                       className="block px-4 py-2 bg-studio-gray/30 hover:bg-studio-gray/50 rounded-lg
-                               text-studio-white font-poppins text-sm transition-all"
+                               text-studio-white font-poppins text-sm transition-all underline text-studio-gold"
                     >
-                      • tagline.txt (Download)
+                      Download Release Audio
                     </a>
-                  )}
-                </div>
+                  </div>
+                )}
+
+                {!releasePack.coverArt && !releasePack.releaseCopy && !releasePack.metadataFile && !releasePack.lyricsPdf && !releasePack.releaseAudio && (
+                  <p className="text-sm text-studio-white/60 font-poppins">No release files yet. Generate cover art, metadata, copy, or lyrics to see files here.</p>
+                )}
               </div>
             )}
           </div>
 
-          {/* Download All Button (Desktop Only) */}
+          {/* Download All Button */}
           <div className="border-t border-studio-white/10 pt-6">
             <motion.button
               onClick={handleDownloadAll}
@@ -493,7 +585,7 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
             >
-              📦 Download All (ZIP — Desktop Only)
+              📦 Download All (ZIP)
             </motion.button>
           </div>
 

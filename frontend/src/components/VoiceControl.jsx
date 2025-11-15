@@ -1,174 +1,182 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 /**
  * Voice Control Component for Label-in-a-Box v4
  * Controls all AI voice interactions with subtitles, mute, volume
+ * PHASE 3: Single global Audio instance, voice selector, fixed controls
  */
+
+// Global audio instance - only ONE can exist at a time
+let globalVoiceAudio = null;
+
+// Global functions for playing/stopping voice
+function playVoice(url, volume = 1, text = '', voiceName = '') {
+  // Stop any currently playing audio
+  if (globalVoiceAudio) {
+    globalVoiceAudio.pause();
+    globalVoiceAudio.currentTime = 0;
+    globalVoiceAudio = null;
+  }
+
+  // Create new Audio instance
+  globalVoiceAudio = new Audio(url);
+  globalVoiceAudio.volume = volume;
+  globalVoiceAudio.muted = false;
+  
+  // Store text and voice name for subtitle display
+  if (window.setVoiceSubtitle) {
+    window.setVoiceSubtitle(text, voiceName);
+  }
+
+  // Handle playback end
+  globalVoiceAudio.onended = () => {
+    if (window.setVoiceSubtitle) {
+      window.setVoiceSubtitle('', '');
+    }
+    globalVoiceAudio = null;
+  };
+
+  // Handle errors
+  globalVoiceAudio.onerror = () => {
+    if (window.setVoiceSubtitle) {
+      window.setVoiceSubtitle('', '');
+    }
+    globalVoiceAudio = null;
+  };
+
+  // Play audio
+  globalVoiceAudio.play().catch(err => {
+    console.error('Audio play failed:', err);
+    globalVoiceAudio = null;
+    if (window.setVoiceSubtitle) {
+      window.setVoiceSubtitle('', '');
+    }
+  });
+}
+
+function stopVoice() {
+  if (globalVoiceAudio) {
+    globalVoiceAudio.pause();
+    globalVoiceAudio.currentTime = 0;
+    globalVoiceAudio = null;
+  }
+  if (window.setVoiceSubtitle) {
+    window.setVoiceSubtitle('', '');
+  }
+}
+
 export default function VoiceControl() {
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const [currentSubtitle, setCurrentSubtitle] = useState('');
   const [currentVoice, setCurrentVoice] = useState(null);
-  const [audioQueue, setAudioQueue] = useState([]);
-  const audioRef = useRef(null);
+  const [selectedPersona, setSelectedPersona] = useState('nova');
+  const [isPlaying, setIsPlaying] = useState(false);
 
-  // Global voice playback function
+  // Expose subtitle setter to global scope
   useEffect(() => {
-    window.playVoice = (voiceData) => {
-      if (voiceData && voiceData.file_url) {
-        setAudioQueue(prev => [...prev, voiceData]);
-      } else if (voiceData && voiceData.text) {
-        // Text-only mode (when TTS unavailable)
-        setCurrentSubtitle(voiceData.text);
-        setCurrentVoice(voiceData.name || voiceData.voice);
-        setTimeout(() => {
-          setCurrentSubtitle('');
-          setCurrentVoice(null);
-        }, 4000);
-      }
+    window.setVoiceSubtitle = (text, voiceName) => {
+      setCurrentSubtitle(text);
+      setCurrentVoice(voiceName);
+      setIsPlaying(!!text);
     };
 
-    window.stopVoice = () => {
-      // Stop window.currentVoiceAudio if it exists
-      if (window.currentVoiceAudio) {
-        window.currentVoiceAudio.pause();
-        window.currentVoiceAudio.currentTime = 0;
-        window.currentVoiceAudio = null;
-      }
-      // Also stop audioRef if it exists
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current.currentTime = 0;
-      }
-      setAudioQueue([]);
-      setCurrentSubtitle('');
-      setCurrentVoice(null);
-    };
+    // Expose global play/stop functions
+    window.playVoiceGlobal = playVoice;
+    window.stopVoiceGlobal = stopVoice;
+    window.getGlobalVoiceAudio = () => globalVoiceAudio;
 
     return () => {
-      delete window.playVoice;
-      delete window.stopVoice;
+      delete window.setVoiceSubtitle;
+      delete window.playVoiceGlobal;
+      delete window.stopVoiceGlobal;
+      delete window.getGlobalVoiceAudio;
     };
   }, []);
 
-  const playNext = useCallback((queueOverride = null) => {
-    const queue = queueOverride || audioQueue;
-    if (queue.length === 0) return;
-
-    // Stop any currently playing audio before playing new one
-    if (window.currentVoiceAudio) {
-      window.currentVoiceAudio.pause();
-      window.currentVoiceAudio.currentTime = 0;
-      window.currentVoiceAudio = null;
-    }
-
-    const nextVoice = queue[0];
-    setCurrentVoice(nextVoice.name || nextVoice.voice);
-    setCurrentSubtitle(nextVoice.text);
-
-    if (nextVoice.file_url) {
-      // Create new Audio instance and assign to window.currentVoiceAudio
-      const audio = new Audio(nextVoice.file_url);
-      audio.volume = volume;
-      audio.muted = isMuted;
-      window.currentVoiceAudio = audio;
-      audioRef.current = audio;
-      
-      const handleEnded = () => {
-        setAudioQueue(prev => {
-          const newQueue = prev.slice(1);
-          setCurrentSubtitle('');
-          setCurrentVoice(null);
-          
-          // Clear window.currentVoiceAudio
-          if (window.currentVoiceAudio) {
-            window.currentVoiceAudio = null;
-          }
-          
-          // Play next in queue if there's more
-          if (newQueue.length > 0) {
-            setTimeout(() => {
-              playNext(newQueue);
-            }, 300);
-          }
-          
-          return newQueue;
-        });
-      };
-      
-      audio.onended = handleEnded;
-      audio.onerror = () => {
-        setAudioQueue(prev => prev.slice(1));
-        setCurrentSubtitle('');
-        setCurrentVoice(null);
-        window.currentVoiceAudio = null;
-      };
-      
-      audio.play().catch(err => {
-        console.error('Audio play failed:', err);
-        window.currentVoiceAudio = null;
-      });
-    }
-  }, [audioQueue, isMuted, volume]);
-
-  // Process audio queue
+  // Update global audio volume when state changes
   useEffect(() => {
-    if (audioQueue.length > 0 && !audioRef.current?.src) {
-      playNext();
+    if (globalVoiceAudio) {
+      globalVoiceAudio.volume = volume;
     }
-  }, [audioQueue, playNext]);
+  }, [volume]);
+
+  // Update global audio mute when state changes
+  useEffect(() => {
+    if (globalVoiceAudio) {
+      globalVoiceAudio.muted = isMuted;
+    }
+  }, [isMuted]);
+
+  // Monitor audio state
+  useEffect(() => {
+    const checkAudioState = () => {
+      if (globalVoiceAudio) {
+        setIsPlaying(!globalVoiceAudio.paused && globalVoiceAudio.currentTime > 0);
+      } else {
+        setIsPlaying(false);
+      }
+    };
+
+    const interval = setInterval(checkAudioState, 100);
+    return () => clearInterval(interval);
+  }, []);
 
   const handleVolumeChange = (e) => {
     const newVolume = parseFloat(e.target.value);
     setVolume(newVolume);
-    // Update window.currentVoiceAudio volume
-    if (window.currentVoiceAudio) {
-      window.currentVoiceAudio.volume = newVolume;
-    }
-    // Also update audioRef if it exists
-    if (audioRef.current) {
-      audioRef.current.volume = newVolume;
+    if (globalVoiceAudio) {
+      globalVoiceAudio.volume = newVolume;
     }
   };
 
   const toggleMute = () => {
     const newMuted = !isMuted;
     setIsMuted(newMuted);
-    // Update window.currentVoiceAudio muted property
-    if (window.currentVoiceAudio) {
-      window.currentVoiceAudio.muted = newMuted;
-    }
-    // Also update audioRef if it exists
-    if (audioRef.current) {
-      audioRef.current.muted = newMuted;
+    if (globalVoiceAudio) {
+      globalVoiceAudio.muted = newMuted;
     }
   };
 
   const stopCurrent = () => {
-    // Stop window.currentVoiceAudio
-    if (window.currentVoiceAudio) {
-      window.currentVoiceAudio.pause();
-      window.currentVoiceAudio.currentTime = 0;
-    }
-    // Also call window.stopVoice which handles cleanup
-    if (window.stopVoice) {
-      window.stopVoice();
-    }
+    stopVoice();
   };
 
-  const pauseCurrent = () => {
-    // Pause window.currentVoiceAudio if it exists
-    if (window.currentVoiceAudio && !window.currentVoiceAudio.paused) {
-      window.currentVoiceAudio.pause();
-    }
-    if (audioRef.current && !audioRef.current.paused) {
-      audioRef.current.pause();
-    }
-  };
+  // Expose selected persona globally
+  useEffect(() => {
+    window.selectedVoicePersona = selectedPersona;
+    return () => {
+      delete window.selectedVoicePersona;
+    };
+  }, [selectedPersona]);
 
   return (
     <div className="voice-controls">
+      {/* Header with description */}
+      <div className="mb-4">
+        <h3 className="text-lg font-semibold text-studio-white mb-2">AI Voice</h3>
+        <p className="text-sm text-studio-white/70">
+          Choose an AI voice and listen to your captions, scripts, or content.
+        </p>
+      </div>
+
+      {/* Voice Personality Selector */}
+      <div className="mb-4">
+        <label className="block text-xs text-studio-white/60 mb-2">Voice Personality</label>
+        <select
+          value={selectedPersona}
+          onChange={(e) => setSelectedPersona(e.target.value)}
+          className="w-full px-4 py-2 bg-gray-800/50 border border-gray-700 rounded-xl text-studio-white text-sm focus:outline-none focus:border-red-500/50 transition-colors"
+        >
+          <option value="nova">Nova (default)</option>
+          <option value="shimmer">Shimmer</option>
+          <option value="verse">Verse</option>
+          <option value="alloy">Alloy</option>
+          <option value="echo">Echo</option>
+        </select>
+      </div>
+
       {/* Subtitle Display */}
       <AnimatePresence>
         {currentSubtitle && (
@@ -199,12 +207,12 @@ export default function VoiceControl() {
           {/* Stop Button */}
           <button
             onClick={stopCurrent}
-            disabled={!currentSubtitle}
-            className={`p-3 rounded-xl transition-all ${
-              currentSubtitle
+            disabled={!isPlaying && !currentSubtitle}
+            className={`p-3 rounded-xl transition-all border ${
+              (isPlaying || currentSubtitle)
                 ? 'bg-red-500/20 hover:bg-red-500/30 border-red-500/50'
                 : 'bg-gray-800/50 border-gray-700 opacity-50 cursor-not-allowed'
-            } border`}
+            }`}
             title="Stop Voice"
           >
             <svg className="w-4 h-4 text-red-400" fill="currentColor" viewBox="0 0 20 20">
@@ -231,28 +239,22 @@ export default function VoiceControl() {
           </button>
 
           {/* Volume Slider */}
-          <div className="flex items-center gap-2 px-3">
+          <div className="flex items-center gap-2 px-3 flex-1">
             <input
               type="range"
               min="0"
               max="1"
-              step="0.1"
+              step="0.01"
               value={volume}
               onChange={handleVolumeChange}
-              className="w-24 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-red-500"
+              className="flex-1 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-red-500"
             />
-            <span className="text-xs text-gray-400 w-8 text-right">
+            <span className="text-xs text-gray-400 w-10 text-right">
               {Math.round(volume * 100)}%
             </span>
           </div>
         </div>
       </div>
-
-      {/* Hidden Audio Element */}
-      <audio
-        ref={audioRef}
-        className="hidden"
-      />
     </div>
   );
 }

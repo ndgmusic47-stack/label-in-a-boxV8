@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Timeline from './components/Timeline';
 import MistLayer from './components/MistLayer';
-import VoiceChat from './components/VoiceChat';
 import VoiceControl from './components/VoiceControl';
 import ErrorBoundary from './components/ErrorBoundary';
 import BeatStage from './components/stages/BeatStage';
@@ -21,7 +20,7 @@ function App() {
   const [isStageOpen, setIsStageOpen] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [currentStage, setCurrentStage] = useState('beat');
-  const [completedStages, setCompletedStages] = useState([]);
+  const [completedStages, setCompletedStages] = useState({});
   const timelineRef = useRef(null);
   const [sessionId, setSessionId] = useState(() => {
     const stored = localStorage.getItem('liab_session_id');
@@ -42,6 +41,16 @@ function App() {
 
   const voice = useVoice(sessionId);
 
+  // NP22: Global stage order for full workflow
+  const stageOrder = [
+    "beat",      // Beat creation module  
+    "lyrics",    // Lyrics module
+    "upload",    // Beat upload module
+    "mix",       // Mix Stage
+    "release",   // Release Pack module
+    "content"    // Content/Viral module
+  ];
+
   // Load project data on mount (workflow status is tracked in project memory)
   useEffect(() => {
     loadProjectData();
@@ -52,19 +61,22 @@ function App() {
       const project = await api.getProject(sessionId);
       if (project && project.workflow) {
         setCurrentStage(project.workflow.current_stage || 'beat');
-        setCompletedStages(project.workflow.completed_stages || []);
+        // Convert array to object format for tick system
+        const completedArray = project.workflow.completed_stages || [];
+        const completedObj = {};
+        completedArray.forEach(stage => {
+          completedObj[stage] = true;
+        });
+        setCompletedStages(completedObj);
       }
     } catch (err) {
       // New session - use defaults
-      console.log('New project session started');
     }
   };
 
   const completeCurrentStage = async (stage) => {
-    // Mark stage as complete locally (backend tracks via project memory)
-    if (!completedStages.includes(stage)) {
-      setCompletedStages([...completedStages, stage]);
-    }
+    // Phase 1: Mark stage as complete using object format for tick system
+    setCompletedStages(prev => ({ ...prev, [stage]: true }));
     
     // Sync with backend to get updated project state after stage completion
     try {
@@ -73,11 +85,10 @@ function App() {
       console.error('Failed to sync project after stage completion:', err);
     }
     
-    // Suggest next stage
-    const stages = ['beat', 'lyrics', 'upload', 'mix', 'release', 'content', 'analytics'];
-    const currentIndex = stages.indexOf(stage);
-    if (currentIndex < stages.length - 1) {
-      const nextStage = stages[currentIndex + 1];
+    // Suggest next stage using NP22 stage order
+    const currentIndex = stageOrder.indexOf(stage);
+    if (currentIndex < stageOrder.length - 1) {
+      const nextStage = stageOrder[currentIndex + 1];
       setCurrentStage(nextStage);
       voice.speak(`${stage} stage complete! ${nextStage} is next`);
     } else {
@@ -106,6 +117,21 @@ function App() {
     setIsStageOpen(false);
   };
 
+  const openStage = (stageId) => {
+    setActiveStage(stageId);
+    setIsStageOpen(true);
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    voice.stopSpeaking();
+  };
+
+  const goToNextStage = () => {
+    const index = stageOrder.indexOf(activeStage);
+    if (index !== -1 && index < stageOrder.length - 1) {
+      const nextStage = stageOrder[index + 1];
+      openStage(nextStage);
+    }
+  };
+
   const handleAnalyticsClose = () => {
     setShowAnalytics(false);
   };
@@ -122,6 +148,7 @@ function App() {
       updateSessionData,
       voice,
       onClose: handleClose,
+      onNext: goToNextStage,
       completeStage: completeCurrentStage,
     };
 
@@ -184,14 +211,6 @@ function App() {
         )}
       </AnimatePresence>
 
-      {/* Voice Chat Interface - Floating above */}
-      {voice.isSupported && (
-        <VoiceChat
-          voice={voice}
-          activeStage={activeStage}
-          sessionData={sessionData}
-        />
-      )}
     </div>
   );
 }

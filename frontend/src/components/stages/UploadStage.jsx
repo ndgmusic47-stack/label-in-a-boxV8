@@ -4,7 +4,7 @@ import { api } from '../../utils/api';
 import StageWrapper from './StageWrapper';
 import WavesurferPlayer from '../WavesurferPlayer';
 
-export default function UploadStage({ sessionId, sessionData, updateSessionData, voice, onClose, completeStage }) {
+export default function UploadStage({ sessionId, sessionData, updateSessionData, voice, onClose, onNext, completeStage }) {
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
@@ -122,11 +122,12 @@ export default function UploadStage({ sessionId, sessionData, updateSessionData,
       title="Upload Recording" 
       icon="🎤" 
       onClose={onClose}
+      onNext={onNext}
       voice={voice}
     >
       <div className="stage-scroll-container">
         <div className="flex flex-col items-center justify-center gap-8 p-6 md:p-10">
-        <div className="text-6xl mb-4">
+        <div className="icon-wrapper text-6xl mb-4">
           🎤
         </div>
 
@@ -155,10 +156,10 @@ export default function UploadStage({ sessionId, sessionData, updateSessionData,
           />
           <label htmlFor="file-input" className="cursor-pointer text-center">
             <p className="text-2xl mb-2">📁</p>
-            <p className="text-studio-white font-montserrat">
+            <p className="text-sm text-studio-white/90 font-montserrat">
               {uploading ? 'Uploading...' : 'Drop your vocal recording here'}
             </p>
-            <p className="text-sm text-studio-white/40 font-poppins mt-2">
+            <p className="text-xs text-studio-white/60 font-poppins mt-2">
               or click to browse (.wav, .mp3, .aiff)
             </p>
           </label>
@@ -174,7 +175,7 @@ export default function UploadStage({ sessionId, sessionData, updateSessionData,
             animate={{ opacity: 1, y: 0 }}
             className="w-full max-w-2xl p-4 bg-studio-gray/30 rounded-lg border border-studio-white/10"
           >
-            <p className="text-sm text-studio-white/80 mb-3 font-montserrat">✓ Vocal Uploaded</p>
+            <p className="text-sm text-studio-white/90 mb-3 font-montserrat">✓ Vocal Uploaded</p>
             <WavesurferPlayer url={sessionData.vocalFile} color="#10B981" height={100} />
           </motion.div>
         )}
@@ -186,7 +187,7 @@ export default function UploadStage({ sessionId, sessionData, updateSessionData,
             animate={{ opacity: 1, y: 0 }}
             className="w-full max-w-2xl p-4 bg-studio-gray/30 rounded-lg border border-studio-white/10"
           >
-            <p className="text-sm text-studio-white/80 mb-3 font-montserrat">Beat Preview</p>
+            <p className="text-sm text-studio-white/90 mb-3 font-montserrat">Beat Preview</p>
             <audio controls src={sessionData.beatFile} className="w-full" />
           </motion.div>
         )}
@@ -197,8 +198,8 @@ export default function UploadStage({ sessionId, sessionData, updateSessionData,
             animate={{ opacity: 1, y: 0 }}
             className="w-full max-w-2xl p-4 bg-studio-gray/30 rounded-lg border border-studio-white/10"
           >
-            <p className="text-sm text-studio-white/80 mb-3 font-montserrat">Lyrics</p>
-            <pre className="text-sm text-studio-white/60 font-poppins whitespace-pre-wrap overflow-auto max-h-48">
+            <p className="text-sm text-studio-white/90 mb-3 font-montserrat">Lyrics</p>
+            <pre className="text-sm text-studio-white/70 font-poppins whitespace-pre-wrap overflow-auto max-h-48">
               {typeof sessionData.lyricsData === 'string' 
                 ? sessionData.lyricsData 
                 : (sessionData.lyricsData.lyrics_text || JSON.stringify(sessionData.lyricsData, null, 2))}
