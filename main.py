@@ -21,6 +21,7 @@ import zipfile
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form, APIRouter, Request, Body, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -30,6 +31,7 @@ from pydub.effects import normalize, compress_dynamic_range, high_pass_filter
 from PIL import Image, ImageDraw, ImageFont
 import requests
 from gtts import gTTS
+from datetime import timezone
 
 # Import local services
 from project_memory import ProjectMemory, get_or_create_project_memory, list_all_projects
@@ -39,6 +41,8 @@ from social_scheduler import SocialScheduler
 from content import content_router
 from auth import auth_router, get_current_user
 from billing import billing_router
+from utils.rate_limit import RateLimiterMiddleware
+from utils.security import validate_audio_file
 
 # ============================================================================
 # PHASE 2.2: SHARED UTILITIES
@@ -57,18 +61,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Phase 2.2 JSON response helpers
+# Phase 1 normalized JSON response helpers
 def success_response(data: Optional[dict] = None, message: str = "Success"):
-    """Standardized success response"""
-    return {"ok": True, "data": data or {}, "message": message}
+	"""Standardized success response"""
+	return {"status": "success", "data": data or {}, "message": message}
 
 def error_response(error: str, status_code: int = 400):
-    """Standardized error response"""
-    logger.error(f"Error response: {error}")
-    return JSONResponse(
-        status_code=status_code,
-        content={"ok": False, "error": error}
-    )
+	"""Standardized error response"""
+	logger.error(f"Error response: {error}")
+	return JSONResponse(
+		status_code=status_code,
+		content={"status": "error", "data": {}, "message": error}
+	)
 
 # Path compatibility helpers for /media/{user_id}/{session_id}/ migration (Phase 8.3)
 def get_session_media_path(session_id: str, user_id: Optional[str] = None) -> Path:
@@ -99,14 +103,42 @@ def log_endpoint_event(endpoint: str, session_id: Optional[str] = None, result: 
 
 app = FastAPI(title="Label in a Box v4 - Phase 2.2")
 
-# CORS middleware
+# Phase 1: Required API keys for startup validation
+REQUIRED_KEYS = [
+	"OPENAI_API_KEY",
+	"BEATOVEN_API_KEY",
+	"BUFFER_TOKEN",
+	"DISTROKID_KEY",
+]
+
+# CORS middleware (Phase 1 hardening)
+allowed_origins = [
+    "http://localhost:5173",
+    "https://labelinabox.com",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Rate limiting middleware (Phase 1)
+app.add_middleware(RateLimiterMiddleware, requests_per_minute=30)
+
+# Enforce HTTPS in production (Render)
+def _is_render_env() -> bool:
+	return bool(os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL") or os.getenv("RENDER_SERVICE_NAME"))
+
+class EnforceHTTPSMiddleware(BaseHTTPMiddleware):
+	async def dispatch(self, request, call_next):
+		if _is_render_env():
+			proto = request.headers.get("x-forwarded-proto", "")
+			if proto and proto.lower() != "https":
+				return error_response("HTTPS required", status_code=403)
+		return await call_next(request)
+
+app.add_middleware(EnforceHTTPSMiddleware)
 
 # Directory setup
 MEDIA_DIR = Path("./media")
@@ -123,6 +155,29 @@ app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 # API ROUTER WRAPPER (adds /api prefix for all endpoints)
 # ============================================================================
 api = APIRouter(prefix="/api")
+
+# ============================================================================
+# STARTUP CHECKS - ENV KEYS (Phase 1)
+# ============================================================================
+@app.on_event("startup")
+async def check_env_keys_on_startup():
+	missing = []
+	for env_key in ["OPENAI_API_KEY", "SUNO_API_KEY", "BUFFER_TOKEN", "DISTROKID_KEY"]:
+		if not os.getenv(env_key):
+			missing.append(env_key)
+	if missing:
+		logger.warning(f"Startup check: Missing environment variables: {', '.join(missing)}")
+	else:
+		logger.info("Startup check: All critical environment variables are set")
+
+# Phase 1: Additional startup validation for required keys (non-fatal)
+@app.on_event("startup")
+async def validate_keys():
+	missing = [key for key in REQUIRED_KEYS if not os.getenv(key)]
+	if missing:
+		logger.warning(f"⚠️ Missing API keys: {missing}")
+	else:
+		logger.info("🔐 All API keys loaded successfully")
 
 # ============================================================================
 # REQUEST MODELS
@@ -308,7 +363,7 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
             
             logger.info(f"🎵 Beatoven job started: {prompt_text}")
             if api_key:
-                logger.info(f"🔑 Using API key: {api_key[:10]}...")
+                logger.info("🔑 Beatoven API key present")
             else:
                 logger.info("🔑 No API key configured")
             
@@ -394,10 +449,14 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
                     return success_response(
                         data={
                             "session_id": session_id,
+                            "project_id": session_id,
+                            "stage": "beat",
                             "url": f"/media/{session_id}/beat.mp3",
                             "beat_url": f"/media/{session_id}/beat.mp3",
+                            "file_url": f"/media/{session_id}/beat.mp3",
                             "status": "ready",
-                            "metadata": extracted_metadata
+                            "metadata": extracted_metadata,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
                         },
                         message="Beat generated successfully via Beatoven"
                     )
@@ -453,10 +512,14 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
         return success_response(
             data={
                 "session_id": session_id,
+                "project_id": session_id,
+                "stage": "beat",
                 "url": f"/media/{session_id}/beat.mp3",
                 "beat_url": f"/media/{session_id}/beat.mp3",
+                "file_url": f"/media/{session_id}/beat.mp3",
                 "status": "ready",
-                "metadata": demo_metadata
+                "metadata": demo_metadata,
+                "timestamp": datetime.now(timezone.utc).isoformat()
             },
             message="Beatoven unavailable, using fallback demo beat"
         )
@@ -478,10 +541,14 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
             return success_response(
                 data={
                     "session_id": session_id,
+                    "project_id": session_id,
+                    "stage": "beat",
                     "url": f"/media/{session_id}/beat.mp3",
                     "beat_url": f"/media/{session_id}/beat.mp3",
+                    "file_url": f"/media/{session_id}/beat.mp3",
                     "status": "ready",
-                    "metadata": silent_metadata
+                    "metadata": silent_metadata,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 },
                 message="Beat created (fallback mode)"
             )
@@ -492,8 +559,10 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
                 data={
                     "session_id": session_id,
                     "url": None,
-                    "beat_url": None,
-                    "status": "error"
+					"beat_url": None,
+					"status": "error",
+					"stage": "beat",
+					"timestamp": datetime.now(timezone.utc).isoformat()
                 },
                 message="Beat generation attempted (check logs for details)"
             )
@@ -678,11 +747,14 @@ Make it authentic and emotionally resonant."""
         return success_response(
             data={
                 "session_id": session_id,
+                "project_id": session_id,
+                "stage": "song",
                 "lyrics": parsed_lyrics,  # Return structured lyrics
                 "lyrics_text": lyrics_text,  # Also include raw text
                 "path": f"/media/{session_id}/lyrics.txt",
                 "voice_url": voice_url,
-                "provider": provider
+                "provider": provider,
+                "timestamp": datetime.now(timezone.utc).isoformat()
             },
             message=f"Lyrics generated via {provider}"
         )
@@ -785,6 +857,12 @@ Standing tall, I claim my name"""
 async def generate_lyrics_from_beat(file: UploadFile = File(...), session_id: Optional[str] = Form(None)):
     """V17: Generate NP22-style lyrics from uploaded beat file"""
     session_id = session_id if session_id else str(uuid.uuid4())
+    # Phase 1: Secure file validation
+    try:
+        await validate_audio_file(file)
+    except HTTPException as he:
+        log_endpoint_event("/lyrics/from_beat", session_id, "error", {"error": he.detail})
+        return error_response(he.detail)
     session_path = get_session_media_path(session_id)
     
     try:
@@ -810,6 +888,8 @@ async def generate_lyrics_from_beat(file: UploadFile = File(...), session_id: Op
         log_endpoint_event("/lyrics/from_beat", session_id, "success", {"bpm": bpm, "mood": mood})
         return success_response(
             data={
+				"timestamp": datetime.now(timezone.utc).isoformat(),
+				"stage": "lyrics",
                 "lyrics": lyrics_text,
                 "bpm": bpm,
                 "mood": mood
@@ -1015,42 +1095,14 @@ async def upload_recording(file: UploadFile = File(...), session_id: Optional[st
     stems_path.mkdir(exist_ok=True, parents=True)
     
     try:
-        # V20: Validate filename
-        if not file.filename:
-            log_endpoint_event("/recordings/upload", session_id, "error", {"error": "No filename"})
-            return JSONResponse(
-                status_code=400,
-                content={"ok": False, "message": "No filename provided"}
-            )
-        
-        # V20: Validate file extension (allowed: .wav, .mp3, .aiff)
-        allowed_extensions = ('.wav', '.mp3', '.aiff')
-        if not file.filename.lower().endswith(allowed_extensions):
-            log_endpoint_event("/recordings/upload", session_id, "error", {"error": "Invalid format"})
-            return JSONResponse(
-                status_code=400,
-                content={"ok": False, "message": "Invalid audio file. Only .wav, .mp3, and .aiff formats are allowed"}
-            )
-        
-        # V20: Read file content for validation
+        # Phase 1: Centralized audio validation
+        try:
+            await validate_audio_file(file)
+        except HTTPException as he:
+            log_endpoint_event("/recordings/upload", session_id, "error", {"error": he.detail})
+            return error_response(he.detail)
+        # Read file bytes for subsequent operations
         content = await file.read()
-        
-        # V20: Validate file size (50MB limit)
-        max_size = 50 * 1024 * 1024  # 50MB in bytes
-        if len(content) > max_size:
-            log_endpoint_event("/recordings/upload", session_id, "error", {"error": "File too large", "size": len(content)})
-            return JSONResponse(
-                status_code=400,
-                content={"ok": False, "message": "File size exceeds 50MB limit"}
-            )
-        
-        # V20: Validate file is not zero-length
-        if len(content) == 0:
-            log_endpoint_event("/recordings/upload", session_id, "error", {"error": "Zero-length file"})
-            return JSONResponse(
-                status_code=400,
-                content={"ok": False, "message": "Invalid audio file. File is empty"}
-            )
         
         # V20: Save file temporarily to validate with pydub
         file_path = stems_path / file.filename
@@ -1065,10 +1117,7 @@ async def upload_recording(file: UploadFile = File(...), session_id: Optional[st
                 # Clean up invalid file
                 file_path.unlink()
                 log_endpoint_event("/recordings/upload", session_id, "error", {"error": "Corrupted audio"})
-                return JSONResponse(
-                    status_code=400,
-                    content={"ok": False, "message": "Invalid audio file. File appears to be corrupted"}
-                )
+                return error_response("Invalid audio file. File appears to be corrupted")
         except Exception as audio_error:
             # Clean up invalid file
             try:
@@ -1076,10 +1125,7 @@ async def upload_recording(file: UploadFile = File(...), session_id: Optional[st
             except:
                 pass
             log_endpoint_event("/recordings/upload", session_id, "error", {"error": f"Audio validation failed: {str(audio_error)}"})
-            return JSONResponse(
-                status_code=400,
-                content={"ok": False, "message": "Invalid audio file. Could not read audio data"}
-            )
+            return error_response("Invalid audio file. Could not read audio data")
         
         # V20: File is valid, update project memory
         memory = get_or_create_project_memory(session_id, MEDIA_DIR)
@@ -1097,21 +1143,21 @@ async def upload_recording(file: UploadFile = File(...), session_id: Optional[st
         return success_response(
             data={
                 "session_id": session_id,
+                "project_id": session_id,
+                "stage": "upload",
                 "file_url": final_url,
                 "uploaded": final_url,
                 "vocal_url": final_url,
                 "filename": file.filename,
-                "path": str(file_path)
+                "path": str(file_path),
+                "timestamp": datetime.now(timezone.utc).isoformat()
             },
             message=f"Uploaded {file.filename} successfully"
         )
     
     except Exception as e:
         log_endpoint_event("/recordings/upload", session_id, "error", {"error": str(e)})
-        return JSONResponse(
-            status_code=500,
-            content={"ok": False, "message": f"Upload failed: {str(e)}"}
-        )
+        return error_response(f"Upload failed: {str(e)}", status_code=500)
 
 # ============================================================================
 # 4. POST /mix/run - PYDUB CHAIN + OPTIONAL AUPHONIC
@@ -1257,11 +1303,15 @@ async def mix_run(request: MixRequest):
         
         return success_response(
             data={
+                "project_id": request.session_id,
+                "stage": "mix",
                 "mix_url": mix_url_path,
+                "file_url": mix_url_path,
                 "master_url": f"/media/{request.session_id}/master.wav",
                 "mastering": mastering_method,
                 "stems_mixed": len(stem_files),
-                "mix_type": mix_type
+                "mix_type": mix_type,
+                "timestamp": datetime.now(timezone.utc).isoformat()
             },
             message=f"Mix completed ({mix_type}) with {mastering_method} mastering"
         )
@@ -1306,20 +1356,14 @@ async def mix_process(
     try:
         # V21: Get input file - from upload or URL
         if file and file.filename:
+            # Phase 1: Centralized audio validation
+            try:
+                await validate_audio_file(file)
+            except HTTPException as he:
+                return error_response(he.detail)
             # Save uploaded file temporarily
             input_file_path = mix_dir / f"temp_input_{uuid.uuid4().hex[:8]}{Path(file.filename).suffix}"
             content = await file.read()
-            
-            # Validate file size (50MB limit)
-            max_size = 50 * 1024 * 1024
-            if len(content) > max_size:
-                return error_response("File size exceeds 50MB limit")
-            
-            # Validate extension
-            allowed_extensions = ('.wav', '.mp3', '.aiff')
-            if not file.filename.lower().endswith(allowed_extensions):
-                return error_response("Unsupported format. Please use .wav, .mp3, or .aiff")
-            
             with open(input_file_path, 'wb') as f:
                 f.write(content)
         elif file_url:
@@ -1538,10 +1582,12 @@ async def mix_process(
             "limiter": limiter_val
         })
         
-        # V25.1: Return EXACTLY file_url (no other fields required)
         return success_response(
             data={
-                "file_url": output_url
+                "project_id": session_id,
+                "stage": "mix",
+                "file_url": output_url,
+                "timestamp": datetime.now(timezone.utc).isoformat()
             },
             message="Mix and master completed successfully"
         )
@@ -1651,7 +1697,12 @@ async def generate_release_cover(request: ReleaseCoverRequest):
             return error_response("Failed to generate any cover art images")
         
         log_endpoint_event("/release/cover", request.session_id, "success", {"count": len(generated_urls)})
-        return success_response({"images": generated_urls})
+        return success_response({
+            "project_id": request.session_id,
+            "stage": "release",
+            "images": generated_urls,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
     
     except Exception as e:
         log_endpoint_event("/release/cover", request.session_id, "error", {"error": str(e)})
@@ -1689,7 +1740,12 @@ async def select_release_cover(request: ReleaseSelectCoverRequest):
         memory.save()
         
         log_endpoint_event("/release/select-cover", request.session_id, "success", {})
-        return success_response({"final_cover": memory.project_data["release"]["cover_art"]})
+        return success_response({
+            "project_id": request.session_id,
+            "stage": "release",
+            "final_cover": memory.project_data["release"]["cover_art"],
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
     
     except Exception as e:
         log_endpoint_event("/release/select-cover", request.session_id, "error", {"error": str(e)})
@@ -1927,14 +1983,7 @@ async def generate_release_metadata(request: ReleaseMetadataRequest, current_use
                 
                 if hours_since_last < 24:
                     log_endpoint_event("/release/metadata", request.session_id, "upgrade_required", {"user_id": user_id, "limit": "daily_release_limit", "hours_since_last": hours_since_last})
-                    return JSONResponse(
-                        status_code=403,
-                        content={
-                            "ok": False,
-                            "error": "upgrade_required",
-                            "feature": "daily_release_limit"
-                        }
-                    )
+					return error_response("upgrade_required", status_code=403)
         # Get audio duration from mixed/master file
         duration_seconds = 0
         bpm = None
@@ -2534,9 +2583,9 @@ async def list_projects(current_user: dict = Depends(get_current_user)):
         # List projects from user's directory
         user_media_dir = MEDIA_DIR / user_id
         projects = list_all_projects(user_media_dir) if user_media_dir.exists() else []
-        return {"ok": True, "projects": projects}
+		return success_response(data={"projects": projects}, message="Projects listed successfully")
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+		return error_response(str(e), status_code=500)
 
 @api.get("/projects/{session_id}")
 async def get_project(session_id: str, current_user: dict = Depends(get_current_user)):
@@ -2544,9 +2593,9 @@ async def get_project(session_id: str, current_user: dict = Depends(get_current_
     try:
         user_id = current_user["user_id"]
         memory = get_or_create_project_memory(session_id, MEDIA_DIR, user_id)
-        return {"ok": True, "project": memory.project_data}
+		return success_response(data={"project": memory.project_data}, message="Project retrieved successfully")
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+		return error_response(str(e), status_code=500)
 
 @api.post("/projects/{session_id}/advance")
 async def advance_stage(session_id: str, current_user: dict = Depends(get_current_user)):
@@ -2595,14 +2644,7 @@ async def save_project(request: ProjectSaveRequest, current_user: dict = Depends
                 # If this is a new project (not updating existing), check limit
                 if not request.projectId and len(existing_projects) >= 1:
                     log_endpoint_event("/projects/save", project_id, "upgrade_required", {"user_id": user_id, "limit": "multi_project"})
-                    return JSONResponse(
-                        status_code=403,
-                        content={
-                            "ok": False,
-                            "error": "upgrade_required",
-                            "feature": "multi_project"
-                        }
-                    )
+					return error_response("upgrade_required", status_code=403)
         
         # Create user's project directory
         projects_dir = Path("./data/projects") / user_id

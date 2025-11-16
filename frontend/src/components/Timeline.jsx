@@ -64,7 +64,7 @@ const Timeline = forwardRef(({ currentStage, activeStage, completedStages = [], 
 
   return (
     <>
-      <div className="timeline">
+      <div className="timeline timeline-container">
         {showBackButton && (
           <motion.button
             initial={{ opacity: 0, y: -10 }}
@@ -84,7 +84,7 @@ const Timeline = forwardRef(({ currentStage, activeStage, completedStages = [], 
           <p className="stage-prompt">{getStagePrompt()}</p>
         </div>
 
-        <div className="timeline-baseline"></div>
+        
         
         {stages.map((stage, index) => {
           const status = getStageStatus(stage.id);

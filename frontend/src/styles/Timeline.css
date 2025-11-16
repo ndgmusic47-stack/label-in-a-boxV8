@@ -17,6 +17,7 @@
   pointer-events: auto;
   position: relative;
   padding: 2rem;
+  z-index: 20; /* NP22 z-index standardization */
 }
 
 .stage {
@@ -88,6 +89,17 @@
   }
 }
 
+/* NP22: Tablet 768–1023px - shrink icons to 80% */
+@media (min-width: 768px) and (max-width: 1023.98px) {
+  .timeline-icon {
+    width: 54px; /* ~0.8 of 68 */
+    height: 54px;
+  }
+  .stage-icon {
+    font-size: 1.75rem;
+  }
+}
+
 .back-to-timeline-btn {
   background: rgba(75, 0, 130, 0.3);
   border: 1px solid rgba(244, 244, 244, 0.2);
@@ -143,18 +155,6 @@
   font-style: italic;
   margin-top: 0.25rem;
   display: block;
-}
-
-.timeline-baseline {
-  position: absolute;
-  top: 50%;
-  left: 0;
-  right: 0;
-  width: 100%;
-  height: 3px;
-  background-color: rgba(255, 255, 255, 0.35);
-  z-index: 0;
-  transform: translateY(-50%);
 }
 
 .pulse-ring {

@@ -34,15 +34,15 @@ def get_session_media_path(session_id: str) -> Path:
     return path
 
 def success_response(data: Optional[dict] = None, message: str = "Success"):
-    """Standardized success response"""
-    return {"ok": True, "data": data or {}, "message": message}
+    """Standardized success response (Phase 1)"""
+    return {"status": "success", "data": data or {}, "message": message}
 
 def error_response(error: str, status_code: int = 400):
-    """Standardized error response"""
+    """Standardized error response (Phase 1)"""
     logger.error(f"Error response: {error}")
     return JSONResponse(
         status_code=status_code,
-        content={"ok": False, "error": error}
+        content={"status": "error", "data": {}, "message": error}
     )
 
 # ============================================================================

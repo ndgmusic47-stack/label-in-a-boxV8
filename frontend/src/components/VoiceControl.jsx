@@ -71,7 +71,6 @@ export default function VoiceControl() {
   const [volume, setVolume] = useState(0.8);
   const [currentSubtitle, setCurrentSubtitle] = useState('');
   const [currentVoice, setCurrentVoice] = useState(null);
-  const [selectedPersona, setSelectedPersona] = useState('nova');
   const [isPlaying, setIsPlaying] = useState(false);
 
   // Expose subtitle setter to global scope
@@ -143,40 +142,16 @@ export default function VoiceControl() {
     stopVoice();
   };
 
-  // Expose selected persona globally
+  // Ensure default persona is always set for voice system without UI
   useEffect(() => {
-    window.selectedVoicePersona = selectedPersona;
+    window.selectedVoicePersona = 'nova';
     return () => {
       delete window.selectedVoicePersona;
     };
-  }, [selectedPersona]);
+  }, []);
 
   return (
     <div className="voice-controls">
-      {/* Header with description */}
-      <div className="mb-4">
-        <h3 className="text-lg font-semibold text-studio-white mb-2">AI Voice</h3>
-        <p className="text-sm text-studio-white/70">
-          Choose an AI voice and listen to your captions, scripts, or content.
-        </p>
-      </div>
-
-      {/* Voice Personality Selector */}
-      <div className="mb-4">
-        <label className="block text-xs text-studio-white/60 mb-2">Voice Personality</label>
-        <select
-          value={selectedPersona}
-          onChange={(e) => setSelectedPersona(e.target.value)}
-          className="w-full px-4 py-2 bg-gray-800/50 border border-gray-700 rounded-xl text-studio-white text-sm focus:outline-none focus:border-red-500/50 transition-colors"
-        >
-          <option value="nova">Nova (default)</option>
-          <option value="shimmer">Shimmer</option>
-          <option value="verse">Verse</option>
-          <option value="alloy">Alloy</option>
-          <option value="echo">Echo</option>
-        </select>
-      </div>
-
       {/* Subtitle Display */}
       <AnimatePresence>
         {currentSubtitle && (
@@ -186,14 +161,14 @@ export default function VoiceControl() {
             exit={{ opacity: 0, y: -20 }}
             className="mb-4 max-w-md"
           >
-            <div className="bg-gradient-to-r from-gray-900/95 to-black/95 backdrop-blur-xl rounded-2xl p-5 border border-red-500/30 shadow-2xl shadow-red-500/20">
+            <div className="bg-gradient-to-r from-gray-900/95 to-black/95 backdrop-blur-xl rounded-2xl p-4 border border-red-500/30 shadow-2xl shadow-red-500/20">
               {currentVoice && (
-                <div className="text-red-400 text-xs font-semibold mb-2 flex items-center gap-2">
+                <div className="text-red-400 text-[0.68rem] font-semibold mb-2 flex items-center gap-2">
                   <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
                   {currentVoice}
                 </div>
               )}
-              <p className="text-white text-sm leading-relaxed">
+              <p className="text-white text-[0.8rem] leading-relaxed voice-subtitle">
                 {currentSubtitle}
               </p>
             </div>
@@ -202,7 +177,7 @@ export default function VoiceControl() {
       </AnimatePresence>
 
       {/* Voice Controls */}
-      <div className="bg-gray-900/90 backdrop-blur-xl rounded-2xl p-4 border border-gray-700 shadow-xl">
+      <div className="bg-gray-900/90 backdrop-blur-xl rounded-2xl p-2 border border-gray-700 shadow-xl">
         <div className="flex items-center gap-3">
           {/* Stop Button */}
           <button
@@ -239,16 +214,18 @@ export default function VoiceControl() {
           </button>
 
           {/* Volume Slider */}
-          <div className="flex items-center gap-2 px-3 flex-1">
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={volume}
-              onChange={handleVolumeChange}
-              className="flex-1 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-red-500"
-            />
+          <div className="flex items-center gap-2 px-2 flex-1">
+            <div className="voice-slider-wrap w-full max-w-[140px]">
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={volume}
+                onChange={handleVolumeChange}
+                className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-red-500"
+              />
+            </div>
             <span className="text-xs text-gray-400 w-10 text-right">
               {Math.round(volume * 100)}%
             </span>
