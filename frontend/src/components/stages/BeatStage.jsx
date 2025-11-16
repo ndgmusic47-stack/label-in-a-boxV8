@@ -22,7 +22,7 @@ export default function BeatStage({ sessionId, sessionData, updateSessionData, v
         setCredits(result.credits);
       } catch (err) {
         console.error('Failed to load credits:', err);
-        setCredits(0);
+        setCredits(null);
       }
     };
     loadCredits();
@@ -157,6 +157,17 @@ export default function BeatStage({ sessionId, sessionData, updateSessionData, v
             />
           </div>
 
+          {/* Credits Status */}
+          {credits === null ? (
+            <span className="text-xs text-red-400 block text-center">
+              Beat credits unavailable – check API key
+            </span>
+          ) : (
+            <span className="text-xs text-emerald-400 block text-center">
+              Beatoven credits: {credits}
+            </span>
+          )}
+
           <motion.button
             onClick={handleGenerateClick}
             disabled={loading || isGenerating}
@@ -237,7 +248,11 @@ export default function BeatStage({ sessionId, sessionData, updateSessionData, v
                 This will create a new AI beat using 1 credit.
               </p>
               <p className="text-xs text-studio-white/60 font-poppins mb-0">
-                Credits remaining: {credits !== null ? credits : '...'}
+                {credits === null ? (
+                  <span className="text-red-400">Beat credits unavailable – check API key</span>
+                ) : (
+                  <>Credits remaining: {credits}</>
+                )}
               </p>
               <div className="flex gap-3">
                 <motion.button

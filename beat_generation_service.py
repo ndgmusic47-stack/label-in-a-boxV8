@@ -28,7 +28,10 @@ class BeatGenerationService:
         self.beats_dir.mkdir(exist_ok=True, parents=True)
         
         # API keys from environment
-        self.beatoven_key = os.getenv("BEATOVEN_KEY")
+        self.beatoven_key = (
+            os.getenv("BEATOVEN_API_KEY")
+            or os.getenv("BEATOVEN_KEY")
+        )
         self.mubert_key = os.getenv("MUBERT_KEY")
         
         # Job tracking
@@ -132,7 +135,10 @@ class BeatGenerationService:
     def _start_beatoven_generation(self, job: Dict) -> Dict:
         """Start real beat generation with Beatoven.ai"""
         if not self.beatoven_key:
-            return {"status": "error", "message": "BEATOVEN_KEY not configured"}
+            return {
+                "status": "error",
+                "message": "Beatoven API key not configured (set BEATOVEN_API_KEY)"
+            }
 
         try:
             url = "https://public-api.beatoven.ai/api/v1/tracks/compose"
