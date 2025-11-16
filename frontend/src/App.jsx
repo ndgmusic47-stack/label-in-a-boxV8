@@ -442,7 +442,7 @@ function App() {
         </div>
       )}
 
-      <main className={`stage-screen ${isStageOpen ? 'fullscreen' : ''}`}>
+      <main className={`stage-screen ${isStageOpen ? 'fullscreen' : ''} ${!activeStage ? 'no-stage-active' : ''}`}>
         <ErrorBoundary onReset={() => setActiveStage(null)}>
           {renderStage()}
         </ErrorBoundary>

@@ -23,6 +23,7 @@ body {
 
 .mist-layer {
   z-index: 10 !important; /* NP22 z-index standardization */
+  pointer-events: none !important;
 }
 
 .red-glow {
@@ -134,7 +135,7 @@ body {
     height: calc(100vh - clamp(160px, 15vh, 240px));
     overflow-y: auto;
     padding: 2rem;
-    z-index: 30; /* NP22 z-index standardization */
+    z-index: 20 !important; /* Ensure timeline sits above stage screen */
 }
 
 /* Fullscreen stage-screen when stage is open */
@@ -146,7 +147,13 @@ body {
     height: 100vh;
     overflow-y: auto;
     padding: 2rem;
-    z-index: 30; /* NP22: StageScreens */
+    z-index: 20 !important; /* Ensure timeline sits above stage screen */
+}
+
+/* When no stage is active, stage screen should not block clicks or show background */
+.stage-screen.no-stage-active {
+  pointer-events: none !important;
+  background: transparent !important;
 }
 
 /* Stage Wrapper - Simple container */
@@ -257,12 +264,9 @@ body {
 
 /* NP22: Mobile <= 767px */
 @media (max-width: 767.98px) {
-  /* Hide timeline and mist on mobile for clarity */
+  /* Keep timeline and mist visible on mobile */
   .timeline-container {
-    display: none !important;
-  }
-  .mist-layer {
-    display: none !important;
+    display: flex !important;
   }
 
   /* Stage occupies full viewport under hidden timeline */
