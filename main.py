@@ -63,16 +63,16 @@ logger = logging.getLogger(__name__)
 
 # Phase 1 normalized JSON response helpers
 def success_response(data: Optional[dict] = None, message: str = "Success"):
-	"""Standardized success response"""
-	return {"status": "success", "data": data or {}, "message": message}
+    """Standardized success response"""
+    return {"status": "success", "data": data or {}, "message": message}
 
 def error_response(error: str, status_code: int = 400):
-	"""Standardized error response"""
-	logger.error(f"Error response: {error}")
-	return JSONResponse(
-		status_code=status_code,
-		content={"status": "error", "data": {}, "message": error}
-	)
+    """Standardized error response"""
+    logger.error(f"Error response: {error}")
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": "error", "data": {}, "message": error}
+    )
 
 # Path compatibility helpers for /media/{user_id}/{session_id}/ migration (Phase 8.3)
 def get_session_media_path(session_id: str, user_id: Optional[str] = None) -> Path:
@@ -105,10 +105,10 @@ app = FastAPI(title="Label in a Box v4 - Phase 2.2")
 
 # Phase 1: Required API keys for startup validation
 REQUIRED_KEYS = [
-	"OPENAI_API_KEY",
-	"BEATOVEN_API_KEY",
-	"BUFFER_TOKEN",
-	"DISTROKID_KEY",
+    "OPENAI_API_KEY",
+    "BEATOVEN_API_KEY",
+    "BUFFER_TOKEN",
+    "DISTROKID_KEY",
 ]
 
 # CORS middleware (Phase 1 hardening)
@@ -128,15 +128,15 @@ app.add_middleware(RateLimiterMiddleware, requests_per_minute=30)
 
 # Enforce HTTPS in production (Render)
 def _is_render_env() -> bool:
-	return bool(os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL") or os.getenv("RENDER_SERVICE_NAME"))
+    return bool(os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL") or os.getenv("RENDER_SERVICE_NAME"))
 
 class EnforceHTTPSMiddleware(BaseHTTPMiddleware):
-	async def dispatch(self, request, call_next):
-		if _is_render_env():
-			proto = request.headers.get("x-forwarded-proto", "")
-			if proto and proto.lower() != "https":
-				return error_response("HTTPS required", status_code=403)
-		return await call_next(request)
+    async def dispatch(self, request, call_next):
+        if _is_render_env():
+            proto = request.headers.get("x-forwarded-proto", "")
+            if proto and proto.lower() != "https":
+                return error_response("HTTPS required", status_code=403)
+        return await call_next(request)
 
 app.add_middleware(EnforceHTTPSMiddleware)
 
@@ -161,23 +161,23 @@ api = APIRouter(prefix="/api")
 # ============================================================================
 @app.on_event("startup")
 async def check_env_keys_on_startup():
-	missing = []
-	for env_key in ["OPENAI_API_KEY", "SUNO_API_KEY", "BUFFER_TOKEN", "DISTROKID_KEY"]:
-		if not os.getenv(env_key):
-			missing.append(env_key)
-	if missing:
-		logger.warning(f"Startup check: Missing environment variables: {', '.join(missing)}")
-	else:
-		logger.info("Startup check: All critical environment variables are set")
+    missing = []
+    for env_key in ["OPENAI_API_KEY", "SUNO_API_KEY", "BUFFER_TOKEN", "DISTROKID_KEY"]:
+        if not os.getenv(env_key):
+            missing.append(env_key)
+    if missing:
+        logger.warning(f"Startup check: Missing environment variables: {', '.join(missing)}")
+    else:
+        logger.info("Startup check: All critical environment variables are set")
 
 # Phase 1: Additional startup validation for required keys (non-fatal)
 @app.on_event("startup")
 async def validate_keys():
-	missing = [key for key in REQUIRED_KEYS if not os.getenv(key)]
-	if missing:
-		logger.warning(f"⚠️ Missing API keys: {missing}")
-	else:
-		logger.info("🔐 All API keys loaded successfully")
+    missing = [key for key in REQUIRED_KEYS if not os.getenv(key)]
+    if missing:
+        logger.warning(f"⚠️ Missing API keys: {missing}")
+    else:
+        logger.info("🔐 All API keys loaded successfully")
 
 # ============================================================================
 # REQUEST MODELS
@@ -559,10 +559,10 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
                 data={
                     "session_id": session_id,
                     "url": None,
-					"beat_url": None,
-					"status": "error",
-					"stage": "beat",
-					"timestamp": datetime.now(timezone.utc).isoformat()
+                    "beat_url": None,
+                    "status": "error",
+                    "stage": "beat",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 },
                 message="Beat generation attempted (check logs for details)"
             )
@@ -888,8 +888,8 @@ async def generate_lyrics_from_beat(file: UploadFile = File(...), session_id: Op
         log_endpoint_event("/lyrics/from_beat", session_id, "success", {"bpm": bpm, "mood": mood})
         return success_response(
             data={
-				"timestamp": datetime.now(timezone.utc).isoformat(),
-				"stage": "lyrics",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "stage": "lyrics",
                 "lyrics": lyrics_text,
                 "bpm": bpm,
                 "mood": mood
@@ -1983,7 +1983,7 @@ async def generate_release_metadata(request: ReleaseMetadataRequest, current_use
                 
                 if hours_since_last < 24:
                     log_endpoint_event("/release/metadata", request.session_id, "upgrade_required", {"user_id": user_id, "limit": "daily_release_limit", "hours_since_last": hours_since_last})
-					return error_response("upgrade_required", status_code=403)
+                    return error_response("upgrade_required", status_code=403)
         # Get audio duration from mixed/master file
         duration_seconds = 0
         bpm = None
@@ -2583,9 +2583,9 @@ async def list_projects(current_user: dict = Depends(get_current_user)):
         # List projects from user's directory
         user_media_dir = MEDIA_DIR / user_id
         projects = list_all_projects(user_media_dir) if user_media_dir.exists() else []
-		return success_response(data={"projects": projects}, message="Projects listed successfully")
+        return success_response(data={"projects": projects}, message="Projects listed successfully")
     except Exception as e:
-		return error_response(str(e), status_code=500)
+        return error_response(str(e), status_code=500)
 
 @api.get("/projects/{session_id}")
 async def get_project(session_id: str, current_user: dict = Depends(get_current_user)):
@@ -2593,9 +2593,9 @@ async def get_project(session_id: str, current_user: dict = Depends(get_current_
     try:
         user_id = current_user["user_id"]
         memory = get_or_create_project_memory(session_id, MEDIA_DIR, user_id)
-		return success_response(data={"project": memory.project_data}, message="Project retrieved successfully")
+        return success_response(data={"project": memory.project_data}, message="Project retrieved successfully")
     except Exception as e:
-		return error_response(str(e), status_code=500)
+        return error_response(str(e), status_code=500)
 
 @api.post("/projects/{session_id}/advance")
 async def advance_stage(session_id: str, current_user: dict = Depends(get_current_user)):
@@ -2644,7 +2644,7 @@ async def save_project(request: ProjectSaveRequest, current_user: dict = Depends
                 # If this is a new project (not updating existing), check limit
                 if not request.projectId and len(existing_projects) >= 1:
                     log_endpoint_event("/projects/save", project_id, "upgrade_required", {"user_id": user_id, "limit": "multi_project"})
-					return error_response("upgrade_required", status_code=403)
+                    return error_response("upgrade_required", status_code=403)
         
         # Create user's project directory
         projects_dir = Path("./data/projects") / user_id
