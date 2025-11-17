@@ -232,10 +232,10 @@ export const api = {
    formData.append('file', file);
    if (sessionId) formData.append('session_id', sessionId);
 
-   const response = await fetch(`${API_BASE}/recordings/upload`, {
-     method: 'POST',
-     body: formData,
-   });
+  const response = await fetch(`${API_BASE}/upload-audio`, {
+    method: 'POST',
+    body: formData,
+  });
    return handleResponse(response);
  },
 

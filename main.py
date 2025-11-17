@@ -42,7 +42,7 @@ from content import content_router
 from auth import auth_router, get_current_user
 from billing import billing_router
 from utils.rate_limit import RateLimiterMiddleware
-from utils.security import validate_audio_file
+from backend.legacy.upload.security import validate_audio_file
 
 # ============================================================================
 # PHASE 2.2: SHARED UTILITIES
@@ -1179,93 +1179,43 @@ Rewrite the lyrics according to the instruction while maintaining NP22 style. Re
         )
 
 # ============================================================================
-# 3. POST /recordings/upload - FIX MULTIPART + MEDIA_DIR BUG
+# 3. POST /recordings/upload - LEGACY UPLOAD (moved to backend/legacy/upload/)
 # ============================================================================
 
-@api.post("/recordings/upload")
-async def upload_recording(file: UploadFile = File(...), session_id: Optional[str] = Form(None)):
-    """V20: Upload vocal recording with comprehensive validation"""
-    session_id = session_id if session_id else str(uuid.uuid4())
-    session_path = get_session_media_path(session_id)
-    stems_path = session_path / "stems"
-    stems_path.mkdir(exist_ok=True, parents=True)
+from backend.legacy.upload.recordings import setup_upload_recording_endpoint
+setup_upload_recording_endpoint(api, get_session_media_path, MEDIA_DIR, log_endpoint_event, error_response, success_response)
+
+# ============================================================================
+# 3.1. POST /upload-audio - CLEAN AUDIO UPLOAD
+# ============================================================================
+
+@api.post("/upload-audio")
+async def upload_audio(
+    file: UploadFile = File(...),
+    session_id: Optional[str] = Form(None)
+):
+    """Clean audio upload endpoint - receives file, saves to media/{session_id}/recordings/, returns file URL"""
+    # Generate session_id if not provided
+    if not session_id:
+        session_id = str(uuid.uuid4())
     
-    try:
-        # Phase 1: Centralized audio validation
-        try:
-            await validate_audio_file(file)
-        except HTTPException as he:
-            log_endpoint_event("/recordings/upload", session_id, "error", {"error": he.detail})
-            return error_response(
-                "Failed to upload recording",
-                status_code=500,
-                data={"session_id": session_id}
-            )
-        # Read file bytes for subsequent operations
+    # Create directory structure
+    recordings_dir = Path("./media") / session_id / "recordings"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save file
+    file_path = recordings_dir / file.filename
+    with open(file_path, "wb") as f:
         content = await file.read()
-        
-        # V20: Save file temporarily to validate with pydub
-        file_path = stems_path / file.filename
-        with open(file_path, 'wb') as f:
-            f.write(content)
-        
-        # V20: Validate file is actual audio by trying to load with pydub
-        try:
-            audio_segment = AudioSegment.from_file(str(file_path))
-            # Check if audio has any duration (even if very short)
-            if len(audio_segment) == 0:
-                # Clean up invalid file
-                file_path.unlink()
-                log_endpoint_event("/recordings/upload", session_id, "error", {"error": "Corrupted audio"})
-                return error_response(
-                    "Failed to upload recording",
-                    status_code=500,
-                    data={"session_id": session_id}
-                )
-        except Exception as audio_error:
-            # Clean up invalid file
-            try:
-                file_path.unlink()
-            except:
-                pass
-            log_endpoint_event("/recordings/upload", session_id, "error", {"error": f"Audio validation failed: {str(audio_error)}"})
-            return error_response(
-                "Failed to upload recording",
-                status_code=500,
-                data={"session_id": session_id}
-            )
-        
-        # V20: File is valid, update project memory
-        memory = get_or_create_project_memory(session_id, MEDIA_DIR)
-        final_url = f"/media/{session_id}/stems/{file.filename}"
-        memory.add_asset(
-            asset_type="stems",
-            file_url=final_url,
-            metadata={"filename": file.filename, "size": len(content)}
-        )
-        memory.advance_stage("upload", "mix")
-        
-        log_endpoint_event("/recordings/upload", session_id, "success", {"filename": file.filename, "size": len(content)})
-        
-        # V20: Return file_url in success response
-        return success_response(
-            data={
-                "session_id": session_id,
-                "filename": file.filename,
-                "path": str(file_path),
-                "url": final_url,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            },
-            message="Recording uploaded"
-        )
+        f.write(content)
     
-    except Exception as e:
-        log_endpoint_event("/recordings/upload", session_id, "error", {"error": str(e)})
-        return error_response(
-            "Failed to upload recording",
-            status_code=500,
-            data={"session_id": session_id}
-        )
+    # Return response
+    file_url = f"/media/{session_id}/recordings/{file.filename}"
+    return {
+        "success": True,
+        "session_id": session_id,
+        "file_url": file_url
+    }
 
 # ============================================================================
 # 3.5. POST /mix/create - CREATE MIX JOB
