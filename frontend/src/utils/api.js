@@ -240,18 +240,20 @@ export const api = {
  },
 
   mixAudio: async (sessionId, params) => {
-    const response = await fetch(`${API_BASE}/mix/run`, {
+    const response = await fetch(`${API_BASE}/mix/run-clean`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         session_id: sessionId,
-        vocal_gain: params.vocal_gain || params.vocalGain || 1.0,
-        beat_gain: params.beat_gain || params.beatGain || 0.8,
-        hpf_hz: params.hpf_hz || params.hpfHz || 80,
-        deess_amount: params.deess_amount || params.deessAmount || 0.3,
+        vocal_url: params.vocal_url,
+        beat_url: params.beat_url,
       }),
     });
-    return handleResponse(response);
+    const result = await response.json();
+    if (!result.ok) {
+      throw new Error(result.error || result.message || 'API request failed');
+    }
+    return result;
   },
 
   // V25: Process mix and master with REAL DSP chain
