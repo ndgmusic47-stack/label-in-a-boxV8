@@ -178,7 +178,7 @@ export default function MixStage({ sessionId, sessionData, updateSessionData, vo
         limiter: limiterVal
       };
       
-      // V25.1: Call /mix/process endpoint
+      // V25.1: Call /mix/run-clean endpoint
       const result = await api.processMix(sessionId, file, dspParams);
       
       if (result && result.file_url) {

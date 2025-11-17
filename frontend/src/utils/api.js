@@ -258,38 +258,32 @@ export const api = {
 
   // V25: Process mix and master with REAL DSP chain
   processMix: async (sessionId, file, params) => {
-    const formData = new FormData();
-    
-    // Handle file - can be File object or URL string
+    // Convert file to vocal_url - handle File object or URL string
+    let vocal_url;
     if (file instanceof File) {
-      formData.append('file', file);
+      // If it's a File object, upload it first to get a server URL
+      const uploadResult = await api.uploadRecording(file, sessionId);
+      vocal_url = uploadResult.file_url || uploadResult.vocal_url || uploadResult.uploaded;
+      if (!vocal_url) {
+        throw new Error('Failed to get file URL after upload');
+      }
     } else if (typeof file === 'string') {
-      // If it's a URL string, backend will fetch it
-      formData.append('file_url', file);
+      vocal_url = file;
     } else {
       throw new Error('Invalid file provided');
     }
     
-    formData.append('session_id', sessionId);
-    formData.append('ai_mix', params.ai_mix || false);
-    formData.append('ai_master', params.ai_master || false);
-    formData.append('mix_strength', params.mix_strength || 0.7);
-    formData.append('master_strength', params.master_strength || 0.8);
-    formData.append('preset', params.preset || 'clean');
-    
-    // V25: EQ parameters
-    formData.append('eq_low', params.eq_low !== undefined ? params.eq_low : 0.0);
-    formData.append('eq_mid', params.eq_mid !== undefined ? params.eq_mid : 0.0);
-    formData.append('eq_high', params.eq_high !== undefined ? params.eq_high : 0.0);
-    
-    // V25: FX parameters
-    formData.append('compression', params.compression !== undefined ? params.compression : 0.5);
-    formData.append('reverb', params.reverb !== undefined ? params.reverb : 0.3);
-    formData.append('limiter', params.limiter !== undefined ? params.limiter : 0.8);
+    // Get beat_url from params if available, otherwise use null
+    const beat_url = params?.beat_url || null;
 
-    const response = await fetch(`${API_BASE}/mix/process`, {
+    const response = await fetch(`${API_BASE}/mix/run-clean`, {
       method: 'POST',
-      body: formData,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        vocal_url: vocal_url,
+        beat_url: beat_url,
+      }),
     });
     return handleResponse(response);
   },
