@@ -2140,26 +2140,26 @@ async def get_release_pack(session_id: str = Query(...), current_user: dict = De
         if cover_dir.exists():
             final_cover = cover_dir / "final_cover_3000.jpg"
             if final_cover.exists():
-                result["coverArt"] = f"/media/{session_id}/release/cover/final_cover_3000.jpg"
+                result["coverArt"] = f"/media/{current_user['user_id']}/{session_id}/release/cover/final_cover_3000.jpg"
             else:
                 # Fallback to any cover file
                 covers = list(cover_dir.glob("cover_*.jpg"))
                 if covers:
-                    result["coverArt"] = f"/media/{session_id}/release/cover/{covers[0].name}"
+                    result["coverArt"] = f"/media/{current_user['user_id']}/{session_id}/release/cover/{covers[0].name}"
         
         # Metadata
         metadata_dir = release_dir / "metadata"
         if metadata_dir.exists():
             metadata_file = metadata_dir / "metadata.json"
             if metadata_file.exists():
-                result["metadataFile"] = f"/media/{session_id}/release/metadata/metadata.json"
+                result["metadataFile"] = f"/media/{current_user['user_id']}/{session_id}/release/metadata/metadata.json"
         
         # Lyrics PDF
         lyrics_dir = release_dir / "lyrics"
         if lyrics_dir.exists():
             lyrics_file = lyrics_dir / "lyrics.pdf"
             if lyrics_file.exists():
-                result["lyricsPdf"] = f"/media/{session_id}/release/lyrics/lyrics.pdf"
+                result["lyricsPdf"] = f"/media/{current_user['user_id']}/{session_id}/release/lyrics/lyrics.pdf"
         
         # Release copy files
         copy_dir = release_dir / "copy"
@@ -2170,11 +2170,11 @@ async def get_release_pack(session_id: str = Query(...), current_user: dict = De
             tagline_file = copy_dir / "tagline.txt"
             
             if desc_file.exists():
-                release_copy["description"] = f"/media/{session_id}/release/copy/release_description.txt"
+                release_copy["description"] = f"/media/{current_user['user_id']}/{session_id}/release/copy/release_description.txt"
             if pitch_file.exists():
-                release_copy["pitch"] = f"/media/{session_id}/release/copy/press_pitch.txt"
+                release_copy["pitch"] = f"/media/{current_user['user_id']}/{session_id}/release/copy/press_pitch.txt"
             if tagline_file.exists():
-                release_copy["tagline"] = f"/media/{session_id}/release/copy/tagline.txt"
+                release_copy["tagline"] = f"/media/{current_user['user_id']}/{session_id}/release/copy/tagline.txt"
         
         if release_copy:
             result["releaseCopy"] = release_copy
@@ -2184,12 +2184,12 @@ async def get_release_pack(session_id: str = Query(...), current_user: dict = De
         if audio_dir.exists():
             audio_file = audio_dir / "mixed_mastered.wav"
             if audio_file.exists():
-                result["releaseAudio"] = f"/media/{session_id}/release/audio/mixed_mastered.wav"
+                result["releaseAudio"] = f"/media/{current_user['user_id']}/{session_id}/release/audio/mixed_mastered.wav"
         else:
             # Fallback to mix directory
             mix_audio = session_path / "mix" / "mixed_mastered.wav"
             if mix_audio.exists():
-                result["releaseAudio"] = f"/media/{session_id}/mix/mixed_mastered.wav"
+                result["releaseAudio"] = f"/media/{current_user['user_id']}/{session_id}/mix/mixed_mastered.wav"
         
         log_endpoint_event("/release/pack", session_id, "success", {})
         return success_response(
@@ -2301,7 +2301,7 @@ async def download_all_release_files(
                 for file in copy_dir.glob("*.txt"):
                     zf.write(file, f"copy/{file.name}")
         
-        zip_url = f"/media/{request.session_id}/release/release_pack.zip"
+        zip_url = f"/media/{current_user['user_id']}/{request.session_id}/release/release_pack.zip"
         
         log_endpoint_event("/release/download-all", request.session_id, "success", {})
         return success_response(
