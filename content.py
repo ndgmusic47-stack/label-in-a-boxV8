@@ -133,13 +133,6 @@ Example format:
         return success_response(data=fallback_idea, message="Video idea generated (fallback)")
 
 # ============================================================================
-# STEP 2: POST /content/upload-video - LEGACY UPLOAD (moved to backend/legacy/upload/)
-# ============================================================================
-
-from backend.legacy.upload.video import setup_upload_video_endpoint
-setup_upload_video_endpoint(content_router, get_session_media_path, success_response, error_response, logger)
-
-# ============================================================================
 # STEP 3: POST /content/analyze - Analyze Video for Viral Score
 # ============================================================================
 

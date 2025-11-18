@@ -41,7 +41,7 @@ class ProjectMemory:
             with open(self.project_file, 'r') as f:
                 return json.load(f)
         
-        return {
+        project_data = {
             "session_id": self.session_id,
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
@@ -108,10 +108,16 @@ class ProjectMemory:
                 "files": []
             }
         }
+        if self.user_id:
+            project_data["user_id"] = self.user_id
+        return project_data
     
     def save(self):
         """Save project data to disk"""
         self.project_data["updated_at"] = datetime.now().isoformat()
+        # Ensure user_id is included
+        if self.user_id:
+            self.project_data["user_id"] = self.user_id
         with open(self.project_file, 'w') as f:
             json.dump(self.project_data, f, indent=2)
         logger.info(f"Project memory saved for session {self.session_id}")

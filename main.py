@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 import json
 from pydub import AudioSegment
 from pydub.effects import normalize, compress_dynamic_range, high_pass_filter
+from pydub.exceptions import CouldntDecodeError
 from PIL import Image, ImageDraw, ImageFont
 import requests
 from gtts import gTTS
@@ -42,9 +43,8 @@ from content import content_router
 from auth import auth_router, get_current_user
 from billing import billing_router
 from utils.rate_limit import RateLimiterMiddleware
-from backend.legacy.upload.security import validate_audio_file
-from backend.legacy.mix.routes import mix_router
 from backend.dsp.dsp_chain import process_vocal
+from backend.orchestrator import ProjectOrchestrator
 
 # ============================================================================
 # PHASE 2.2: SHARED UTILITIES
@@ -63,43 +63,43 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Phase 1 normalized JSON response helpers
-def success_response(data: Optional[dict] = None, message: str = "Success"):
-    """
-    Standardized success response for frontend compatibility.
-    Returns shape expected by handleResponse() in frontend/api.js:
-    { ok: true, data: {...}, message: "..." }
-    """
-    return {
-        "ok": True,
-        "data": data or {},
-        "message": message,
-    }
+# Phase 1 normalized JSON response helpers - now from unified module
+from backend.utils.responses import success_response, error_response
 
-def error_response(error: str, status_code: int = 400, data: Optional[dict] = None):
+def require_feature_pro(current_user: dict, feature: str, endpoint: str):
     """
-    Standardized error response for frontend compatibility.
-    { ok: false, error: "msg", message: "msg", data: {...} }
+    Simple feature gate: block free users from specific features.
+
+    - current_user: dict from get_current_user()
+    - feature: short feature key, e.g. "upload", "mix", "release_pack"
+    - endpoint: endpoint path string for logging
     """
-    logger.error(f"Error response: {error}")
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "ok": False,
-            "error": error,
-            "message": error,
-            "data": data or {},
-        },
-    )
+    user_id = current_user.get("user_id")
+    plan = current_user.get("plan", "free")
+
+    # Only free users are blocked. Pro (and any future plans) pass.
+    if plan == "free":
+        log_endpoint_event(
+            endpoint,
+            None,
+            "upgrade_required",
+            {"user_id": user_id, "feature": feature, "plan": plan},
+        )
+        return error_response(
+            "upgrade_required",
+            status_code=403,
+            data={"feature": feature, "plan": plan},
+        )
+
+    return None
 
 # Path compatibility helpers for /media/{user_id}/{session_id}/ migration (Phase 8.3)
-def get_session_media_path(session_id: str, user_id: Optional[str] = None) -> Path:
-    """Get media path for session - Phase 8.3 uses /media/{user_id}/{session_id}/"""
-    if user_id:
-        path = Path("./media") / user_id / session_id
-    else:
-        # Backward compatibility: use /media/{session_id}/ if no user_id
-        path = Path("./media") / session_id
+def get_session_media_path(session_id: str, user_id: str) -> Path:
+    """
+    Phase 8B:
+    User-scoped media path. No backward compatibility.
+    """
+    path = Path("./media") / user_id / session_id
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -220,8 +220,6 @@ class SongRequest(BaseModel):
     session_id: Optional[str] = Field(None)
     beat_context: Optional[dict] = Field(None, description="Beat metadata (tempo/key/energy)")
 
-# MixRequest moved to backend.legacy.mix.models
-
 class ReleaseRequest(BaseModel):
     session_id: str
     title: Optional[str] = None
@@ -260,7 +258,7 @@ def should_speak(persona: str, text: str) -> bool:
     _voice_debounce_cache[key] = now
     return True
 
-def gtts_speak(persona: str, text: str, session_id: Optional[str] = None):
+def gtts_speak(persona: str, text: str, session_id: Optional[str] = None, user_id: Optional[str] = None):
     """Phase 2.2: Generate speech using gTTS with SHA256 cache and 10s debounce"""
     # Generate session_id if not provided
     if not session_id:
@@ -270,7 +268,9 @@ def gtts_speak(persona: str, text: str, session_id: Optional[str] = None):
     cache_key = hashlib.sha256(f"{persona}:{text}".encode()).hexdigest()
     
     # Create voices directory
-    voices_dir = get_session_media_path(session_id) / "voices"
+    if not user_id:
+        raise ValueError("user_id is required for gtts_speak")
+    voices_dir = get_session_media_path(session_id, user_id) / "voices"
     voices_dir.mkdir(exist_ok=True, parents=True)
     
     output_file = voices_dir / f"{cache_key}.mp3"
@@ -313,7 +313,7 @@ def gtts_speak(persona: str, text: str, session_id: Optional[str] = None):
 # ============================================================================
 
 @api.post("/beats/create")
-async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
+async def create_beat(request: Optional[BeatRequest] = Body(default=None), current_user: dict = Depends(get_current_user)):
     """Phase 2.2: Generate beat using Beatoven API with fallback to demo beat - NEVER returns 422"""
     # Handle None request (empty body) or partial request
     if request is None:
@@ -337,7 +337,7 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
     if duration_provided and duration_sec is not None:
         duration_sec = max(10, min(300, duration_sec))
     
-    session_path = get_session_media_path(session_id)
+    session_path = get_session_media_path(session_id, current_user["user_id"])
     
     if duration_provided and duration_sec is not None:
         logger.info(f"🎵 Beat creation request: prompt={prompt[:50]}..., mood={mood}, genre={genre}, bpm={bpm or 'AI-determined'}, duration={duration_sec}s, session={session_id}")
@@ -458,9 +458,27 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
                     memory.add_asset("beat", f"/media/{session_id}/beat.mp3", {"bpm": extracted_bpm, "mood": mood, "metadata": extracted_metadata})
                     memory.advance_stage("beat", "lyrics")
                     
+                    # Prepare beat_url and beat_meta for orchestrator
+                    beat_url = f"/media/{session_id}/beat.mp3"
+                    beat_meta = {
+                        "bpm": extracted_bpm,
+                        "mood": mood,
+                        "genre": genre,
+                        "provider": "beatoven",
+                        **extracted_metadata
+                    }
+                    
+                    # Phase 6: Auto-save to orchestrator
+                    orchestrator = ProjectOrchestrator(current_user["user_id"], session_id)
+                    orchestrator.update_stage("beat", {
+                        "url": beat_url,
+                        "meta": beat_meta,
+                        "completed": True
+                    })
+                    
                     log_endpoint_event("/beats/create", session_id, "success", {"source": "beatoven", "mood": mood})
                     job = {
-                        "beat_url": f"/media/{session_id}/beat.mp3",
+                        "beat_url": beat_url,
                         "status": "ready",
                         "provider": "beatoven",
                         "progress": 100
@@ -524,6 +542,24 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
         memory.add_asset("beat", f"/media/{session_id}/beat.mp3", {"bpm": bpm or 120, "mood": mood, "source": "demo", "metadata": demo_metadata})
         memory.advance_stage("beat", "lyrics")
         
+        # Prepare beat_url and beat_meta for orchestrator
+        beat_url = f"/media/{session_id}/beat.mp3"
+        beat_meta = {
+            "bpm": bpm or 120,
+            "mood": mood,
+            "genre": genre,
+            "provider": "demo",
+            **demo_metadata
+        }
+        
+        # Phase 6: Auto-save to orchestrator
+        orchestrator = ProjectOrchestrator(current_user["user_id"], session_id)
+        orchestrator.update_stage("beat", {
+            "url": beat_url,
+            "meta": beat_meta,
+            "completed": True
+        })
+        
         log_endpoint_event("/beats/create", session_id, "success", {"source": "demo", "mood": mood})
         return success_response(
             data={
@@ -549,6 +585,23 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None)):
             silent_metadata = {"duration": duration_sec or 60, "bpm": bpm or 120, "key": "C"}
             memory.update_metadata(tempo=bpm or 120, mood=mood, genre=genre)
             memory.add_asset("beat", f"/media/{session_id}/beat.mp3", {"bpm": bpm or 120, "mood": mood, "source": "silent_fallback", "metadata": silent_metadata})
+            
+            # Phase 6: Auto-save to orchestrator
+            try:
+                orchestrator = ProjectOrchestrator(current_user["user_id"], session_id)
+                orchestrator.update_stage("beat", {
+                    "url": f"/media/{session_id}/beat.mp3",
+                    "meta": {
+                        "bpm": bpm or 120,
+                        "mood": mood,
+                        "genre": genre,
+                        "provider": "silent_fallback",
+                        **silent_metadata
+                    },
+                    "completed": True
+                })
+            except Exception as e:
+                logger.warning(f"Failed to auto-save beat stage: {e}")
             
             log_endpoint_event("/beats/create", session_id, "success", {"source": "silent_fallback", "mood": mood})
             return error_response(
@@ -680,10 +733,10 @@ async def get_beat_status(job_id: str):
 # ============================================================================
 
 @api.post("/songs/write")
-async def write_song(request: SongRequest):
+async def write_song(request: SongRequest, current_user: dict = Depends(get_current_user)):
     """Phase 2.2: Generate song lyrics using OpenAI with fallback"""
     session_id = request.session_id if request.session_id else str(uuid.uuid4())
-    session_path = get_session_media_path(session_id)
+    session_path = get_session_media_path(session_id, current_user["user_id"])
     
     # Static fallback lyrics
     fallback_lyrics = f"""[Verse 1]
@@ -780,7 +833,7 @@ Make it authentic and emotionally resonant."""
                 voice_text = voice_text[:200] + "..."
             
             # Generate voice using default persona "nova"
-            voice_result = gtts_speak("nova", voice_text, session_id)
+            voice_result = gtts_speak("nova", voice_text, session_id, current_user["user_id"])
             if isinstance(voice_result, dict) and voice_result.get("ok"):
                 voice_url = voice_result.get("data", {}).get("url")
                 logger.info(f"Generated voice for lyrics: {voice_url}")
@@ -904,20 +957,10 @@ Standing tall, I claim my name"""
 # ============================================================================
 
 @api.post("/lyrics/from_beat")
-async def generate_lyrics_from_beat(file: UploadFile = File(...), session_id: Optional[str] = Form(None)):
+async def generate_lyrics_from_beat(file: UploadFile = File(...), session_id: Optional[str] = Form(None), current_user: dict = Depends(get_current_user)):
     """V17: Generate NP22-style lyrics from uploaded beat file"""
     session_id = session_id if session_id else str(uuid.uuid4())
-    # Phase 1: Secure file validation
-    try:
-        await validate_audio_file(file)
-    except HTTPException as he:
-        log_endpoint_event("/lyrics/from_beat", session_id, "error", {"error": he.detail})
-        return error_response(
-            "Failed to generate lyrics from beat",
-            status_code=500,
-            data={"session_id": session_id}
-        )
-    session_path = get_session_media_path(session_id)
+    session_path = get_session_media_path(session_id, current_user["user_id"])
     
     try:
         # Save uploaded file temporarily
@@ -961,6 +1004,14 @@ async def generate_lyrics_from_beat(file: UploadFile = File(...), session_id: Op
             project["updated_at"] = datetime.now().isoformat()
             with open(project_file, "w", encoding="utf-8") as f:
                 json.dump(project, f, indent=2)
+        
+        # Phase 6: Auto-save to orchestrator
+        orchestrator = ProjectOrchestrator(current_user["user_id"], session_id)
+        orchestrator.update_stage("lyrics", {
+            "text": lyrics_text,
+            "meta": {},
+            "completed": True
+        })
         
         # Clean up temp file
         try:
@@ -1176,28 +1227,30 @@ Rewrite the lyrics according to the instruction while maintaining NP22 style. Re
         )
 
 # ============================================================================
-# 3. POST /recordings/upload - LEGACY UPLOAD (moved to backend/legacy/upload/)
-# ============================================================================
-
-from backend.legacy.upload.recordings import setup_upload_recording_endpoint
-setup_upload_recording_endpoint(api, get_session_media_path, MEDIA_DIR, log_endpoint_event, error_response, success_response)
-
-# ============================================================================
 # 3.1. POST /upload-audio - CLEAN AUDIO UPLOAD
 # ============================================================================
 
 @api.post("/upload-audio")
 async def upload_audio(
     file: UploadFile = File(...),
-    session_id: Optional[str] = Form(None)
+    session_id: Optional[str] = Form(None),
+    current_user: dict = Depends(get_current_user),
 ):
     """Clean audio upload endpoint - receives file, saves to media/{session_id}/recordings/, returns file URL"""
+    # Phase 8A: Feature gate for clean upload
+    deny = require_feature_pro(current_user, feature="upload", endpoint="/upload-audio")
+    if deny is not None:
+        return deny
+    
     # Generate session_id if not provided
     if not session_id:
         session_id = str(uuid.uuid4())
     
-    # Create directory structure
-    recordings_dir = Path("./media") / session_id / "recordings"
+    user_id = current_user.get("user_id")
+    
+    # Create directory structure with user_id
+    recordings_dir = Path("./media") / user_id / session_id / "recordings"
+    file_url = f"/media/{user_id}/{session_id}/recordings/{file.filename}"
     recordings_dir.mkdir(parents=True, exist_ok=True)
     
     # Save file
@@ -1206,38 +1259,20 @@ async def upload_audio(
         content = await file.read()
         f.write(content)
     
-    # Return response
-    file_url = f"/media/{session_id}/recordings/{file.filename}"
-    return {
-        "ok": True,
-        "data": {
+    # Phase 6: Auto-save to orchestrator
+    orchestrator = ProjectOrchestrator(user_id, session_id)
+    orchestrator.update_stage("vocals", {
+        "vocal_url": file_url,
+        "completed": True
+    })
+    
+    return success_response(
+        data={
             "session_id": session_id,
             "file_url": file_url
-        }
-    }
-
-# ============================================================================
-# 3.5. POST /mix/create - CREATE MIX JOB
-# ============================================================================
-# Moved to backend.legacy.mix.routes
-
-# ============================================================================
-# 4. POST /mix/run - PYDUB CHAIN + OPTIONAL AUPHONIC
-# ============================================================================
-# Moved to backend.legacy.mix.routes
-
-# Legacy mix_run and mix_process functions removed - now in backend.legacy.mix.routes
-
-# ============================================================================
-# V21: POST /mix/process - AI MIX & MASTER WITH DSP PIPELINE
-# ============================================================================
-# Moved to backend.legacy.mix.routes
-
-# ============================================================================
-# POST /mix/apply - APPLY MIX
-# ============================================================================
-
-# MixApplyRequest moved to backend.legacy.mix.models
+        },
+        message="Vocal uploaded"
+    )
 
 # ============================================================================
 # POST /mix/run-clean - CLEAN MINIMAL MIX
@@ -1247,10 +1282,26 @@ class CleanMixRequest(BaseModel):
     session_id: str
     vocal_url: str
     beat_url: str
+    user_id: Optional[str] = None
+    plan: Optional[str] = "free"
+    trial_started_at: Optional[str] = None
+    subscription_active: Optional[bool] = False
 
 @api.post("/mix/run-clean")
-async def run_clean_mix(request: CleanMixRequest):
+async def run_clean_mix(
+    request: CleanMixRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """Clean mix with DSP processing: overlay processed vocal on beat"""
+    # Phase 8A: Feature gate for clean mix
+    deny = require_feature_pro(current_user, feature="mix", endpoint="/mix/run-clean")
+    if deny is not None:
+        return deny
+    
+    MAX_DURATION_MS = 10 * 60 * 1000  # 10 minutes
+    
+    logger.info("Running clean mix…")
+    
     try:
         # Resolve file paths (handle both /media/... and ./media/... paths)
         vocal_path = request.vocal_url
@@ -1265,33 +1316,177 @@ async def run_clean_mix(request: CleanMixRequest):
         elif not beat_path.startswith("./"):
             beat_path = "./" + beat_path.lstrip("/")
         
-        # Load audio files
-        vocal = AudioSegment.from_file(vocal_path)
-        beat = AudioSegment.from_file(beat_path)
+        # ========================================================================
+        # 1. AUDIO VALIDATION (before DSP)
+        # ========================================================================
         
-        # Apply DSP
-        processed_vocal = process_vocal(vocal)
+        # Validate vocal file
+        if not Path(vocal_path).exists():
+            return error_response(
+                "INVALID_AUDIO",
+                400,
+                "The provided vocal or beat file is corrupted or unsupported."
+            )
         
-        # Mix
-        mixed = beat.overlay(processed_vocal)
+        if not Path(vocal_path).is_file():
+            return error_response(
+                "INVALID_AUDIO",
+                400,
+                "The provided vocal or beat file is corrupted or unsupported."
+            )
         
-        # Export final output
-        mix_dir = Path(f"./media/{request.session_id}/mix/")
+        if Path(vocal_path).stat().st_size == 0:
+            return error_response(
+                "INVALID_AUDIO",
+                400,
+                "The provided vocal or beat file is corrupted or unsupported."
+            )
+        
+        # Validate beat file
+        if not Path(beat_path).exists():
+            return error_response(
+                "INVALID_AUDIO",
+                400,
+                "The provided vocal or beat file is corrupted or unsupported."
+            )
+        
+        if not Path(beat_path).is_file():
+            return error_response(
+                "INVALID_AUDIO",
+                400,
+                "The provided vocal or beat file is corrupted or unsupported."
+            )
+        
+        if Path(beat_path).stat().st_size == 0:
+            return error_response(
+                "INVALID_AUDIO",
+                400,
+                "The provided vocal or beat file is corrupted or unsupported."
+            )
+        
+        # Check file format (WAV/MP3)
+        vocal_ext = Path(vocal_path).suffix.lower()
+        beat_ext = Path(beat_path).suffix.lower()
+        
+        if vocal_ext not in ['.wav', '.mp3']:
+            return error_response(
+                "INVALID_AUDIO",
+                400,
+                "The provided vocal or beat file is corrupted or unsupported."
+            )
+        
+        if beat_ext not in ['.wav', '.mp3']:
+            return error_response(
+                "INVALID_AUDIO",
+                400,
+                "The provided vocal or beat file is corrupted or unsupported."
+            )
+        
+        # ==========================
+        # PHASE 4: SAFETY VALIDATION
+        # ==========================
+
+        try:
+            vocal = AudioSegment.from_file(vocal_path)
+            beat = AudioSegment.from_file(beat_path)
+        except CouldntDecodeError:
+            return error_response("INVALID_AUDIO", 400, "Could not decode audio")
+
+        # Length checks
+        MAX_DURATION_MS = 10 * 60 * 1000
+        if len(vocal) <= 0 or len(beat) <= 0:
+            return error_response("INVALID_AUDIO", 400, "Empty audio file")
+        if len(vocal) > MAX_DURATION_MS or len(beat) > MAX_DURATION_MS:
+            return error_response("FILE_TOO_LONG", 400, "Audio file exceeds maximum duration")
+
+        # Sample rate/channel matching
+        if vocal.frame_rate != beat.frame_rate:
+            vocal = vocal.set_frame_rate(beat.frame_rate)
+        if vocal.channels != beat.channels:
+            if beat.channels == 2:
+                vocal = vocal.set_channels(2)
+            else:
+                vocal = vocal.set_channels(1)
+
+        # Loudness guard
+        max_dBFS = vocal.max_dBFS
+        if max_dBFS < -60:
+            return error_response("INVALID_AUDIO", 400, "Vocal is too quiet")
+        if max_dBFS > 0:
+            vocal -= 3
+
+        # ==========================
+        # DSP PROCESSING
+        # ==========================
+        try:
+            processed_vocal = process_vocal(vocal)
+        except Exception as e:
+            logger.error(f"DSP error: {e}")
+            return error_response("DSP_FAILURE", 500, f"DSP processing failed: {str(e)}")
+
+        # Save processed vocal separately
+        processed_dir = Path(f"./media/{request.user_id}/{request.session_id}/mix/")
+        processed_vocal_url = f"/media/{request.user_id}/{request.session_id}/mix/processed_vocal.wav"
+        processed_dir.mkdir(parents=True, exist_ok=True)
+        processed_vocal_path = processed_dir / "processed_vocal.wav"
+        processed_vocal.export(processed_vocal_path, format="wav")
+
+        # ==========================
+        # MIXING
+        # ==========================
+        min_len = min(len(beat), len(processed_vocal))
+        beat = beat[:min_len]
+        processed_vocal = processed_vocal[:min_len]
+        mixed = beat.overlay(processed_vocal - 2)
+
+        mixed = normalize(mixed)
+        mixed -= 1.5
+
+        # ==========================
+        # EXPORT FINAL MIX
+        # ==========================
+        mix_dir = Path(f"./media/{request.user_id}/{request.session_id}/mix/")
+        mix_url = f"/media/{request.user_id}/{request.session_id}/mix/mix_clean.wav"
         mix_dir.mkdir(parents=True, exist_ok=True)
-        
         output_path = mix_dir / "mix_clean.wav"
         mixed.export(output_path, format="wav")
+
+        # ==========================
+        # LOGGING + METADATA
+        # ==========================
+        logger.info(f"Processed vocal peak: {processed_vocal.max_dBFS}")
+        logger.info(f"Mixed peak: {mixed.max_dBFS}")
+
+        # Phase 6: Auto-save to orchestrator
+        orchestrator = ProjectOrchestrator(request.user_id, request.session_id)
+        orchestrator.update_stage("mix", {
+            "mix_url": mix_url,
+            "processed_vocal_url": processed_vocal_url,
+            "duration_ms": len(mixed),
+            "peak_dB": mixed.max_dBFS,
+            "completed": True
+        })
+
+        return success_response(
+            data={
+                "mix_url": mix_url,
+                "processed_vocal_url": processed_vocal_url,
+                "duration_ms": len(mixed),
+                "peak_dB": mixed.max_dBFS,
+                "rms_dB": mixed.rms,
+            },
+            message="Mix generated successfully"
+        )
         
-        # Return JSON
-        return {
-            "ok": True,
-            "data": {
-                "mix_url": f"/media/{request.session_id}/mix/mix_clean.wav"
-            }
-        }
+    except CouldntDecodeError:
+        return error_response(
+            "INVALID_AUDIO",
+            400,
+            "Could not decode audio."
+        )
     except Exception as e:
         logger.error(f"Clean mix failed: {e}")
-        return error_response(f"Failed to create clean mix: {str(e)}", status_code=500)
+        return error_response("UNEXPECTED_ERROR", 500, f"Failed to create clean mix: {str(e)}")
 
 # ============================================================================
 # NEW RELEASE MODULE - REDESIGNED
@@ -1323,9 +1518,9 @@ class ReleaseMetadataRequest(BaseModel):
     release_date: str
 
 @api.post("/release/cover")
-async def generate_release_cover(request: ReleaseCoverRequest):
+async def generate_release_cover(request: ReleaseCoverRequest, current_user: dict = Depends(get_current_user)):
     """Generate AI cover art using OpenAI (3 images, 3000x3000, 1500x1500, 1080x1920)"""
-    session_path = get_session_media_path(request.session_id)
+    session_path = get_session_media_path(request.session_id, current_user["user_id"])
     cover_dir = session_path / "release" / "cover"
     cover_dir.mkdir(parents=True, exist_ok=True)
     
@@ -1405,9 +1600,9 @@ class ReleaseSelectCoverRequest(BaseModel):
     cover_url: str
 
 @api.post("/release/select-cover")
-async def select_release_cover(request: ReleaseSelectCoverRequest):
+async def select_release_cover(request: ReleaseSelectCoverRequest, current_user: dict = Depends(get_current_user)):
     """Save selected cover art to final versions (3000, 1500, vertical) and update memory"""
-    session_path = get_session_media_path(request.session_id)
+    session_path = get_session_media_path(request.session_id, current_user["user_id"])
     cover_dir = session_path / "release" / "cover"
     cover_dir.mkdir(parents=True, exist_ok=True)
     
@@ -1447,9 +1642,9 @@ async def select_release_cover(request: ReleaseSelectCoverRequest):
         return error_response(f"Failed to select cover art: {str(e)}")
 
 @api.post("/release/copy")
-async def generate_release_copy(request: ReleaseCopyRequest):
+async def generate_release_copy(request: ReleaseCopyRequest, current_user: dict = Depends(get_current_user)):
     """Generate release copy: release_description.txt, press_pitch.txt, tagline.txt"""
-    session_path = get_session_media_path(request.session_id)
+    session_path = get_session_media_path(request.session_id, current_user["user_id"])
     copy_dir = session_path / "release" / "copy"
     copy_dir.mkdir(parents=True, exist_ok=True)
     
@@ -1557,9 +1752,9 @@ Format as JSON:
         return error_response(f"Release copy generation failed: {str(e)}")
 
 @api.post("/release/lyrics")
-async def generate_lyrics_pdf(request: ReleaseRequest):
+async def generate_lyrics_pdf(request: ReleaseRequest, current_user: dict = Depends(get_current_user)):
     """Generate lyrics.pdf if lyrics exist"""
-    session_path = get_session_media_path(request.session_id)
+    session_path = get_session_media_path(request.session_id, current_user["user_id"])
     lyrics_dir = session_path / "release" / "lyrics"
     lyrics_dir.mkdir(parents=True, exist_ok=True)
     
@@ -1656,12 +1851,12 @@ async def generate_lyrics_pdf(request: ReleaseRequest):
 @api.post("/release/metadata")
 async def generate_release_metadata(request: ReleaseMetadataRequest, current_user: dict = Depends(get_current_user)):
     """Generate metadata.json with track info"""
-    session_path = get_session_media_path(request.session_id)
+    user_id = current_user["user_id"]
+    session_path = get_session_media_path(request.session_id, user_id)
     metadata_dir = session_path / "release" / "metadata"
     metadata_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        user_id = current_user["user_id"]
         user_plan = current_user.get("plan", "free")
         
         # PHASE 8.4: Free tier limit enforcement - 1 release per 24 hours
@@ -1696,7 +1891,7 @@ async def generate_release_metadata(request: ReleaseMetadataRequest, current_use
                     pass
         
         # Get BPM and key from project memory
-        memory = get_or_create_project_memory(request.session_id, MEDIA_DIR)
+        memory = get_or_create_project_memory(request.session_id, MEDIA_DIR, user_id)
         bpm = memory.project_data.get("metadata", {}).get("tempo")
         key = memory.project_data.get("metadata", {}).get("key")
         
@@ -1717,8 +1912,11 @@ async def generate_release_metadata(request: ReleaseMetadataRequest, current_use
             json.dump(metadata, f, indent=2)
         
         # Update project memory with full release info
-        metadata_url = f"/media/{request.session_id}/release/metadata/metadata.json"
-        memory = get_or_create_project_memory(request.session_id, MEDIA_DIR)
+        if user_id:
+            metadata_url = f"/media/{user_id}/{request.session_id}/release/metadata/metadata.json"
+        else:
+            metadata_url = f"/media/{request.session_id}/release/metadata/metadata.json"
+        memory = get_or_create_project_memory(request.session_id, MEDIA_DIR, user_id)
         memory.update("release.title", request.track_title)
         memory.update("release.artist", request.artist_name)
         memory.update("release.genre", request.genre)
@@ -1752,13 +1950,133 @@ async def generate_release_metadata(request: ReleaseMetadataRequest, current_use
         log_endpoint_event("/release/metadata", request.session_id, "error", {"error": str(e)})
         return error_response(f"Metadata generation failed: {str(e)}")
 
+class ReleaseBuildRequest(BaseModel):
+    session_id: str
+    title: str
+    artist: str
+    cover_prompt: Optional[str] = None
+    release_date: Optional[str] = None
+    user_id: Optional[str] = None
+    plan: Optional[str] = "free"
+    trial_started_at: Optional[str] = None
+    subscription_active: Optional[bool] = False
+
+@api.post("/release/build")
+async def build_release_pack(request: ReleaseBuildRequest):
+    """
+    PHASE 5: Build complete release pack with standardized structure.
+    Validates inputs and generates cover, metadata, and copies audio.
+    """
+    # Access control check
+    from backend.auth.user import User
+    from backend.auth.billing import user_can_use_feature
+    
+    if not request.user_id:
+        return error_response(
+            "PAYWALL",
+            402,
+            "This action requires an active subscription or trial."
+        )
+    
+    user = User(
+        user_id=request.user_id,
+        plan=request.plan or "free",
+        trial_started_at=request.trial_started_at,
+        subscription_active=request.subscription_active or False
+    )
+    
+    if not user_can_use_feature(user, "release"):
+        return error_response(
+            "PAYWALL",
+            402,
+            "This action requires an active subscription or trial."
+        )
+    
+    try:
+        # Import release service
+        from backend.release.release_service import ReleaseService
+        
+        # Validate required fields
+        if not request.title or not request.title.strip():
+            log_endpoint_event("/release/build", request.session_id, "error", {"error": "MISSING_FIELD", "field": "title"})
+            return error_response("MISSING_FIELD", 400, "Missing required field: title", data={"field": "title"})
+        
+        if not request.artist or not request.artist.strip():
+            log_endpoint_event("/release/build", request.session_id, "error", {"error": "MISSING_FIELD", "field": "artist"})
+            return error_response("MISSING_FIELD", 400, "Missing required field: artist", data={"field": "artist"})
+        
+        if not request.session_id or not request.session_id.strip():
+            log_endpoint_event("/release/build", request.session_id, "error", {"error": "MISSING_FIELD", "field": "session_id"})
+            return error_response("MISSING_FIELD", 400, "Missing required field: session_id", data={"field": "session_id"})
+        
+        # Validate cover prompt exists (required)
+        if not request.cover_prompt or not request.cover_prompt.strip():
+            log_endpoint_event("/release/build", request.session_id, "error", {"error": "MISSING_FIELD", "field": "cover_prompt"})
+            return error_response("MISSING_FIELD", 400, "Missing required field: cover_prompt", data={"field": "cover_prompt"})
+        
+        # Find mixed file
+        session_path = get_session_media_path(request.session_id, request.user_id)
+        mixed_file_path = None
+        
+        # Try to find mixed/mastered file
+        for filename in ["mix/mixed_mastered.wav", "mix.wav", "master.wav", "release/audio/mixed_mastered.wav"]:
+            candidate_path = session_path / filename
+            if candidate_path.exists():
+                mixed_file_path = candidate_path
+                break
+        
+        if not mixed_file_path or not mixed_file_path.exists():
+            log_endpoint_event("/release/build", request.session_id, "error", {"error": "MISSING_FIELD", "field": "mixed_file"})
+            return error_response("MISSING_FIELD", 400, "Missing required field: mixed_file", data={"field": "mixed_file"})
+        
+        # Build release pack
+        release_service = ReleaseService()
+        result = release_service.build_release_pack(
+            session_id=request.session_id,
+            title=request.title,
+            artist=request.artist,
+            mixed_file_path=mixed_file_path,
+            cover_prompt=request.cover_prompt,
+            release_date=request.release_date,
+            user_id=request.user_id
+        )
+        
+        if not result.get("ok"):
+            error_msg = result.get("error", "Unknown error")
+            log_endpoint_event("/release/build", request.session_id, "error", {"error": error_msg})
+            return error_response(error_msg, 400, error_msg, data=result.get("data", {}))
+        
+        # Phase 6: Auto-save to orchestrator
+        orchestrator = ProjectOrchestrator(request.user_id, request.session_id)
+        release_data = result.get("data", {})
+        cover_url = release_data.get("cover_url")
+        song_url = release_data.get("song_url")
+        metadata_url = release_data.get("metadata_url")
+        orchestrator.update_stage("release", {
+            "cover_url": cover_url,
+            "song_url": song_url,
+            "metadata_url": metadata_url,
+            "completed": True
+        })
+        
+        log_endpoint_event("/release/build", request.session_id, "success", {})
+        return success_response(
+            data=result.get("data", {}),
+            message=result.get("message", "Release pack successfully created.")
+        )
+    
+    except Exception as e:
+        logger.error(f"Release build endpoint failed: {e}", exc_info=True)
+        log_endpoint_event("/release/build", request.session_id if 'request' in locals() else "unknown", "error", {"error": str(e)})
+        return error_response("UNEXPECTED_ERROR", 500, f"Release build failed: {str(e)}")
+
 class ReleaseFilesRequest(BaseModel):
     session_id: str
 
 @api.get("/release/files")
-async def list_release_files(session_id: str = Query(...)):
+async def list_release_files(session_id: str = Query(...), current_user: dict = Depends(get_current_user)):
     """List all release files dynamically"""
-    session_path = get_session_media_path(session_id)
+    session_path = get_session_media_path(session_id, current_user["user_id"])
     release_dir = session_path / "release"
     
     try:
@@ -1809,9 +2127,9 @@ async def list_release_files(session_id: str = Query(...)):
         return error_response(f"Failed to list release files: {str(e)}")
 
 @api.get("/release/pack")
-async def get_release_pack(session_id: str = Query(...)):
+async def get_release_pack(session_id: str = Query(...), current_user: dict = Depends(get_current_user)):
     """Get complete release pack data: cover art, metadata, lyrics PDF, release copy, and audio"""
-    session_path = get_session_media_path(session_id)
+    session_path = get_session_media_path(session_id, current_user["user_id"])
     release_dir = session_path / "release"
     
     try:
@@ -1884,9 +2202,21 @@ async def get_release_pack(session_id: str = Query(...)):
         return error_response(f"Failed to get release pack: {str(e)}")
 
 @api.post("/release/download-all")
-async def download_all_release_files(request: ReleaseRequest):
+async def download_all_release_files(
+    request: ReleaseRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """Generate ZIP of all release files (desktop only)"""
-    session_path = get_session_media_path(request.session_id)
+    # Phase 8A: Feature gate for full release pack download
+    deny = require_feature_pro(
+        current_user,
+        feature="release_pack",
+        endpoint="/release/download-all",
+    )
+    if deny is not None:
+        return deny
+    
+    session_path = get_session_media_path(request.session_id, current_user["user_id"])
     release_dir = session_path / "release"
     release_dir.mkdir(parents=True, exist_ok=True)
     
@@ -2061,9 +2391,9 @@ async def get_social_platforms():
     )
 
 @api.post("/social/posts")
-async def create_social_post(request: SocialPostRequest):
+async def create_social_post(request: SocialPostRequest, current_user: dict = Depends(get_current_user)):
     """Schedule a social post using GetLate.dev API or local JSON fallback"""
-    session_path = get_session_media_path(request.session_id)
+    session_path = get_session_media_path(request.session_id, current_user["user_id"])
     getlate_key = os.getenv("GETLATE_API_KEY")
     
     try:
@@ -2162,10 +2492,10 @@ async def create_social_post(request: SocialPostRequest):
 # ============================================================================
 
 @api.get("/analytics/session/{session_id}")
-async def get_session_analytics(session_id: str):
+async def get_session_analytics(session_id: str, current_user: dict = Depends(get_current_user)):
     """Phase 2.2: Get analytics for a specific session (safe demo metrics)"""
     try:
-        session_path = get_session_media_path(session_id)
+        session_path = get_session_media_path(session_id, current_user["user_id"])
         project_file = session_path / "project.json"
         schedule_file = session_path / "schedule.json"
         
@@ -2256,10 +2586,10 @@ async def get_dashboard_analytics():
 # ============================================================================
 
 @api.post("/voices/say")
-async def voice_say(request: VoiceSayRequest):
+async def voice_say(request: VoiceSayRequest, current_user: dict = Depends(get_current_user)):
     """Phase 2.2: Make an AI persona speak using gTTS (10s debounce, SHA256)"""
     try:
-        result = gtts_speak(request.persona, request.text, request.session_id)
+        result = gtts_speak(request.persona, request.text, request.session_id, current_user["user_id"])
         return result
     except Exception as e:
         log_endpoint_event("/voices/say", request.session_id, "error", {"error": str(e)})
@@ -2465,10 +2795,35 @@ async def load_project(request: ProjectLoadRequest, current_user: dict = Depends
         return error_response(f"Failed to load project: {str(e)}")
 
 # ============================================================================
+# PHASE 6: PROJECT ORCHESTRATOR ENDPOINTS
+# ============================================================================
+
+class ProjectLoadRequestPhase6(BaseModel):
+    session_id: str
+
+@api.post("/project/load")
+def load_project(request: ProjectLoadRequestPhase6, current_user: dict = Depends(get_current_user)):
+    orchestrator = ProjectOrchestrator(current_user["user_id"], request.session_id)
+    state = orchestrator.get_full_state()
+    if not state:
+        return error_response("PROJECT_NOT_FOUND", 404, "Project not found")
+    return success_response(data=state)
+
+@api.get("/project/state/{session_id}")
+def get_project_state(session_id: str, current_user: dict = Depends(get_current_user)):
+    orchestrator = ProjectOrchestrator(current_user["user_id"], session_id)
+    return success_response(data=orchestrator.get_full_state())
+
+@api.post("/project/reset")
+def reset_project(request: ProjectLoadRequestPhase6, current_user: dict = Depends(get_current_user)):
+    orchestrator = ProjectOrchestrator(current_user["user_id"], request.session_id)
+    orchestrator.reset_project()
+    return success_response(message="Project reset.")
+
+# ============================================================================
 # INCLUDE API ROUTER
 # ============================================================================
 app.include_router(api)
-api.include_router(mix_router)  # Mix routes: /api/mix/*
 app.include_router(auth_router)
 app.include_router(content_router)
 app.include_router(billing_router)
