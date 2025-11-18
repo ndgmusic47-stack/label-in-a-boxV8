@@ -6,6 +6,7 @@ Handles multi-platform post scheduling, formatting, and content optimization.
 import os
 import json
 import requests
+import httpx
 import logging
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
@@ -247,7 +248,7 @@ class SocialScheduler:
             "suggestions": optimized["suggestions"]
         }
     
-    def schedule_with_getlate(
+    async def schedule_with_getlate(
         self,
         platform: str,
         content: str,
@@ -306,7 +307,8 @@ class SocialScheduler:
             api_url = "https://api.getlate.dev/v1/posts"
             
             try:
-                response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(api_url, headers=headers, json=payload, timeout=30)
                 response.raise_for_status()
                 result = response.json()
                 
@@ -340,7 +342,7 @@ class SocialScheduler:
                     "message": f"Post scheduled on {platform} via GetLate.dev"
                 }
                 
-            except requests.exceptions.RequestException as e:
+            except httpx.RequestError as e:
                 logger.error(f"GetLate API request failed: {e}")
                 return {
                     "success": False,

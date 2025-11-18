@@ -311,9 +311,26 @@ function App() {
       case 'upload':
         return <UploadStage {...commonProps} />;
       case 'mix':
-        return <MixStage {...commonProps} />;
+        return (
+          <MixStage
+            {...commonProps}
+            onComplete={(stageKey, url) => {
+              completeCurrentStage(stageKey);
+              updateSessionData({ masterFile: url });
+            }}
+          />
+        );
       case 'release':
-        return <ReleaseStage {...commonProps} />;
+        return (
+          <ReleaseStage
+            {...commonProps}
+            masterFile={sessionData?.masterFile}
+            onComplete={(stageKey, url) => {
+              completeCurrentStage(stageKey);
+              updateSessionData({ masterFile: url });
+            }}
+          />
+        );
       case 'content':
         return <ContentStage {...commonProps} />;
       case 'analytics':

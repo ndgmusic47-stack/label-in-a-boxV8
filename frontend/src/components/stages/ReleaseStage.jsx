@@ -4,7 +4,7 @@ import { api } from '../../utils/api';
 import { handlePaywall } from '../../utils/paywall';
 import StageWrapper from './StageWrapper';
 
-export default function ReleaseStage({ sessionData, updateSessionData, voice, onClose, onNext, sessionId, completeStage, openUpgradeModal }) {
+export default function ReleaseStage({ sessionData, updateSessionData, voice, onClose, onNext, sessionId, completeStage, openUpgradeModal, masterFile, onComplete }) {
   // Form inputs
   const [trackTitle, setTrackTitle] = useState(sessionData.trackTitle || sessionData.metadata?.track_title || '');
   const [artistName, setArtistName] = useState(sessionData.artistName || sessionData.metadata?.artist_name || 'NP22');
@@ -22,6 +22,9 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
   // Release pack data
   const [releasePack, setReleasePack] = useState(null);
   const [loadingPack, setLoadingPack] = useState(false);
+  
+  // Master file state
+  const [masterUrl, setMasterUrl] = useState(null);
   
   // Generation states
   const [generatingCopy, setGeneratingCopy] = useState(false);
@@ -51,6 +54,15 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
       if (sessionData.metadata.mood) setMood(sessionData.metadata.mood);
     }
   }, [sessionData]);
+
+  // Load masterFile on mount
+  useEffect(() => {
+    if (masterFile) {
+      setMasterUrl(masterFile);
+    } else if (sessionData?.masterFile) {
+      setMasterUrl(sessionData.masterFile);
+    }
+  }, [masterFile, sessionData]);
 
   // Fetch release pack data
   const fetchReleasePack = async () => {
@@ -249,6 +261,28 @@ export default function ReleaseStage({ sessionData, updateSessionData, voice, on
       <div className="stage-scroll-container">
         <div className="flex flex-col gap-8 p-6 md:p-10 max-w-4xl mx-auto">
           
+          {/* Master Audio Preview Section */}
+          {masterUrl && (
+            <div className="space-y-4">
+              <h2 className="text-lg text-studio-gold font-montserrat font-semibold">Final Mixed Audio</h2>
+              <audio controls src={masterUrl} style={{ width: "100%" }} />
+              <button
+                className="continue-btn"
+                onClick={() => {
+                  onComplete && onComplete("release", masterUrl);
+                }}
+                style={{
+                  marginTop: "20px",
+                  padding: "10px 20px",
+                  fontSize: "16px",
+                  borderRadius: "6px"
+                }}
+              >
+                Continue
+              </button>
+            </div>
+          )}
+
           {/* Cover Art Preview Section */}
           <div className="space-y-4">
             <h2 className="text-lg text-studio-gold font-montserrat font-semibold">Cover Art Preview</h2>

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class ReleaseService:
     """
     Service for building standardized release packs.
-    Enforces folder structure: /media/{session_id}/release/
+    Enforces folder structure: /media/{user_id}/{session_id}/release/
     """
     
     def __init__(self):
@@ -143,7 +143,7 @@ class ReleaseService:
             if user_id:
                 base_url = f"/media/{user_id}/{session_id}/release"
             else:
-                base_url = f"/media/{session_id}/release"
+                base_url = f"/media/{user_id}/{session_id}/release"
             return {
                 "ok": True,
                 "data": {

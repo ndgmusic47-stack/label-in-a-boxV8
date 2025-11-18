@@ -239,54 +239,6 @@ export const api = {
    return handleResponse(response);
  },
 
-  mixAudio: async (sessionId, params) => {
-    const response = await fetch(`${API_BASE}/mix/run-clean`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: sessionId,
-        vocal_url: params.vocal_url,
-        beat_url: params.beat_url,
-      }),
-    });
-    const result = await response.json();
-    if (!result.ok) {
-      throw new Error(result.error || result.message || 'API request failed');
-    }
-    return result;
-  },
-
-  // V25: Process mix and master with REAL DSP chain
-  processMix: async (sessionId, file, params) => {
-    // Convert file to vocal_url - handle File object or URL string
-    let vocal_url;
-    if (file instanceof File) {
-      // If it's a File object, upload it first to get a server URL
-      const uploadResult = await api.uploadRecording(file, sessionId);
-      vocal_url = uploadResult.file_url || uploadResult.vocal_url || uploadResult.uploaded;
-      if (!vocal_url) {
-        throw new Error('Failed to get file URL after upload');
-      }
-    } else if (typeof file === 'string') {
-      vocal_url = file;
-    } else {
-      throw new Error('Invalid file provided');
-    }
-    
-    // Get beat_url from params if available, otherwise use null
-    const beat_url = params?.beat_url || null;
-
-    const response = await fetch(`${API_BASE}/mix/run-clean`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: sessionId,
-        vocal_url: vocal_url,
-        beat_url: beat_url,
-      }),
-    });
-    return handleResponse(response);
-  },
 
 
 
@@ -764,5 +716,19 @@ export const api = {
      }
    });
    return handleResponse(response);
- },
+  },
+};
+
+export const mixAudio = async (userId, sessionId) => {
+  try {
+    const res = await fetch(
+      `${API_BASE}/mix/${userId}/${sessionId}`,
+      { method: "POST" }
+    );
+    if (!res.ok) throw new Error("Mix failed");
+    return await res.json();
+  } catch (err) {
+    console.error("mixAudio error:", err);
+    throw err;
+  }
 };

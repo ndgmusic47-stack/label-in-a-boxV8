@@ -29,7 +29,7 @@ class ProjectMemory:
         if user_id:
             self.session_path = media_dir / user_id / session_id
         else:
-            # Backward compatibility: use /media/{session_id}/ if no user_id
+            # Backward compatibility: use /media/{user_id}/{session_id}/ if no user_id
             self.session_path = media_dir / session_id
         self.session_path.mkdir(parents=True, exist_ok=True)
         self.project_file = self.session_path / "project.json"

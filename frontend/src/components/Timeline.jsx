@@ -2,7 +2,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useState, useEffect, forwardRef } from 'react';
 import '../styles/Timeline.css';
 
-const Timeline = forwardRef(({ currentStage, activeStage, completedStages = [], onStageClick, showBackButton, onBackToTimeline }, ref) => {
+const Timeline = forwardRef(({ currentStage, activeStage, completedStages = [], onStageClick, showBackButton, onBackToTimeline, setProject, setCurrentStage: setCurrentStageProp, project, sessionData }, ref) => {
   const [showGoalModal, setShowGoalModal] = useState(false);
   const [wasAllComplete, setWasAllComplete] = useState(false);
   
@@ -16,11 +16,49 @@ const Timeline = forwardRef(({ currentStage, activeStage, completedStages = [], 
     { id: 'analytics', icon: '📊', label: 'Analytics', dept: 'Pulse' }
   ];
 
+  const updateProjectStage = (stage, data) => {
+    if (setProject) {
+      setProject(prev => ({
+        ...prev,
+        stages: {
+          ...prev.stages,
+          [stage]: {
+            ...(prev.stages?.[stage] || {}),
+            ...data
+          }
+        }
+      }));
+    }
+  };
+
+  const moveToNextStage = () => {
+    if (setCurrentStageProp) {
+      setCurrentStageProp(prev => {
+        const currentIndex = stages.findIndex(s => s.id === prev);
+        if (currentIndex < stages.length - 1) {
+          return stages[currentIndex + 1].id;
+        }
+        return prev;
+      });
+    }
+  };
+
   const getStageStatus = (stageId) => {
     // Phase 1: Check object format for tick system
     if (completedStages[stageId]) return 'completed';
+    
+    // PATCH 2.6: For mix stage, also check project.stages.mix.completed or sessionData.masterFile
+    if (stageId === 'mix') {
+      const mixCompleted = project?.stages?.mix?.completed || sessionData?.masterFile;
+      if (mixCompleted) return 'completed';
+    }
+    
     return 'upcoming';
   };
+
+  // Mix stage completion is handled via completeStage prop passed from App.jsx
+  // When MixStage calls completeStage("mix"), App.jsx updates completedStages
+  // and Timeline automatically reflects the completion status
 
   const getStagePrompt = () => {
     const stage = stages.find(s => s.id === currentStage);

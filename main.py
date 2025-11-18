@@ -31,6 +31,7 @@ from pydub.effects import normalize, compress_dynamic_range, high_pass_filter
 from pydub.exceptions import CouldntDecodeError
 from PIL import Image, ImageDraw, ImageFont
 import requests
+import httpx
 from gtts import gTTS
 from datetime import timezone
 
@@ -45,6 +46,7 @@ from billing import billing_router
 from utils.rate_limit import RateLimiterMiddleware
 from backend.dsp.dsp_chain import process_vocal
 from backend.orchestrator import ProjectOrchestrator
+from backend.mix_service import apply_basic_mix
 
 # ============================================================================
 # PHASE 2.2: SHARED UTILITIES
@@ -293,7 +295,7 @@ def gtts_speak(persona: str, text: str, session_id: Optional[str] = None, user_i
         
         # Return URL whether debounced or not (spec requires playable asset)
         # Construct URL path relative to media directory
-        url_path = f"/media/{session_id}/voices/{cache_key}.mp3"
+        url_path = f"/media/{user_id}/{session_id}/voices/{cache_key}.mp3"
         log_endpoint_event("/voices/say", session_id, "success", {"persona": persona, "cached": is_debounced})
         return success_response(
             data={
@@ -381,7 +383,8 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None), curre
                 logger.info("🔑 No API key configured")
             
             compose_url = "https://public-api.beatoven.ai/api/v1/tracks/compose"
-            compose_res = requests.post(compose_url, headers=headers, json=payload, timeout=30)
+            async with httpx.AsyncClient() as client:
+                compose_res = await client.post(compose_url, headers=headers, json=payload, timeout=30)
             
             # Handle 422 and other HTTP errors gracefully
             if compose_res.status_code == 422:
@@ -393,7 +396,7 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None), curre
                 logger.warning(f"Beatoven API returned 401 Unauthorized - invalid API key")
                 logger.warning("Beatoven unavailable, serving fallback beat")
                 raise Exception("Beatoven API authentication failed")
-            elif not compose_res.ok:
+            elif not compose_res.is_success:
                 error_detail = compose_res.text
                 logger.warning(f"Beatoven API returned {compose_res.status_code}: {error_detail}")
                 logger.warning("Beatoven unavailable, serving fallback beat")
@@ -408,102 +411,103 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None), curre
             logger.info(f"✅ Beatoven task started: {task_id}")
             
             # Step 2: Poll for completion (up to 3 minutes) - ASYNC to not block event loop
-            for attempt in range(60):
-                await asyncio.sleep(3)  # Non-blocking sleep
-                status_url = f"https://public-api.beatoven.ai/api/v1/tasks/{task_id}"
-                status_res = requests.get(status_url, headers=headers, timeout=30)
-                
-                # Handle status check errors
-                if not status_res.ok:
-                    logger.warning(f"Beatoven status check failed: {status_res.status_code}")
-                    raise Exception(f"Beatoven status check error: {status_res.status_code}")
-                
-                status_data = status_res.json()
-                status = status_data.get("status")
-                
-                if status == "composed":
-                    meta = status_data.get("meta", {})
-                    audio_url = meta.get("track_url")
-                    if not audio_url:
-                        raise Exception("Beatoven: track_url missing")
+            async with httpx.AsyncClient() as client:
+                for attempt in range(60):
+                    await asyncio.sleep(3)  # Non-blocking sleep
+                    status_url = f"https://public-api.beatoven.ai/api/v1/tasks/{task_id}"
+                    status_res = await client.get(status_url, headers=headers, timeout=30)
                     
-                    # Download the audio
-                    output_file = session_path / "beat.mp3"
-                    audio_data = requests.get(audio_url, timeout=60)
-                    audio_data.raise_for_status()
-                    with open(output_file, "wb") as f:
-                        f.write(audio_data.content)
+                    # Handle status check errors
+                    if not status_res.is_success:
+                        logger.warning(f"Beatoven status check failed: {status_res.status_code}")
+                        raise Exception(f"Beatoven status check error: {status_res.status_code}")
                     
-                    logger.info(f"🎵 Beatoven track ready: {output_file}")
+                    status_data = status_res.json()
+                    status = status_data.get("status")
                     
-                    # Extract metadata from Beatoven response
-                    extracted_metadata = {}
-                    if meta.get("duration"):
-                        extracted_metadata["duration"] = int(meta.get("duration"))
-                    elif meta.get("length"):
-                        extracted_metadata["duration"] = int(meta.get("length"))
+                    if status == "composed":
+                        meta = status_data.get("meta", {})
+                        audio_url = meta.get("track_url")
+                        if not audio_url:
+                            raise Exception("Beatoven: track_url missing")
+                        
+                        # Download the audio
+                        output_file = session_path / "beat.mp3"
+                        audio_data = await client.get(audio_url, timeout=60)
+                        audio_data.raise_for_status()
+                        with open(output_file, "wb") as f:
+                            f.write(audio_data.content)
+                        
+                        logger.info(f"🎵 Beatoven track ready: {output_file}")
+                        
+                        # Extract metadata from Beatoven response
+                        extracted_metadata = {}
+                        if meta.get("duration"):
+                            extracted_metadata["duration"] = int(meta.get("duration"))
+                        elif meta.get("length"):
+                            extracted_metadata["duration"] = int(meta.get("length"))
+                        
+                        # BPM from meta or use provided/calculated bpm
+                        extracted_bpm = meta.get("bpm") or meta.get("tempo") or bpm
+                        if extracted_bpm:
+                            extracted_metadata["bpm"] = int(extracted_bpm) if isinstance(extracted_bpm, (int, float)) else extracted_bpm
+                        
+                        # Key from meta
+                        if meta.get("key"):
+                            extracted_metadata["key"] = meta.get("key")
+                        
+                        # Update project memory
+                        memory = get_or_create_project_memory(session_id, MEDIA_DIR)
+                        memory.update_metadata(tempo=extracted_bpm, mood=mood, genre=genre)
+                        memory.add_asset("beat", f"/media/{current_user['user_id']}/{session_id}/beat.mp3", {"bpm": extracted_bpm, "mood": mood, "metadata": extracted_metadata})
+                        memory.advance_stage("beat", "lyrics")
+                        
+                        # Prepare beat_url and beat_meta for orchestrator
+                        beat_url = f"/media/{current_user['user_id']}/{session_id}/beat.mp3"
+                        beat_meta = {
+                            "bpm": extracted_bpm,
+                            "mood": mood,
+                            "genre": genre,
+                            "provider": "beatoven",
+                            **extracted_metadata
+                        }
+                        
+                        # Phase 6: Auto-save to orchestrator
+                        orchestrator = ProjectOrchestrator(current_user["user_id"], session_id)
+                        orchestrator.update_stage("beat", {
+                            "url": beat_url,
+                            "meta": beat_meta,
+                            "completed": True
+                        })
+                        
+                        log_endpoint_event("/beats/create", session_id, "success", {"source": "beatoven", "mood": mood})
+                        job = {
+                            "beat_url": beat_url,
+                            "status": "ready",
+                            "provider": "beatoven",
+                            "progress": 100
+                        }
+                        return success_response(
+                            data={
+                                "session_id": session_id,
+                                "url": job.get("beat_url"),
+                                "beat_url": job.get("beat_url"),
+                                "status": job.get("status"),
+                                "provider": job.get("provider"),
+                                "progress": job.get("progress", 0)
+                            },
+                            message="Beat generation started"
+                        )
                     
-                    # BPM from meta or use provided/calculated bpm
-                    extracted_bpm = meta.get("bpm") or meta.get("tempo") or bpm
-                    if extracted_bpm:
-                        extracted_metadata["bpm"] = int(extracted_bpm) if isinstance(extracted_bpm, (int, float)) else extracted_bpm
-                    
-                    # Key from meta
-                    if meta.get("key"):
-                        extracted_metadata["key"] = meta.get("key")
-                    
-                    # Update project memory
-                    memory = get_or_create_project_memory(session_id, MEDIA_DIR)
-                    memory.update_metadata(tempo=extracted_bpm, mood=mood, genre=genre)
-                    memory.add_asset("beat", f"/media/{session_id}/beat.mp3", {"bpm": extracted_bpm, "mood": mood, "metadata": extracted_metadata})
-                    memory.advance_stage("beat", "lyrics")
-                    
-                    # Prepare beat_url and beat_meta for orchestrator
-                    beat_url = f"/media/{session_id}/beat.mp3"
-                    beat_meta = {
-                        "bpm": extracted_bpm,
-                        "mood": mood,
-                        "genre": genre,
-                        "provider": "beatoven",
-                        **extracted_metadata
-                    }
-                    
-                    # Phase 6: Auto-save to orchestrator
-                    orchestrator = ProjectOrchestrator(current_user["user_id"], session_id)
-                    orchestrator.update_stage("beat", {
-                        "url": beat_url,
-                        "meta": beat_meta,
-                        "completed": True
-                    })
-                    
-                    log_endpoint_event("/beats/create", session_id, "success", {"source": "beatoven", "mood": mood})
-                    job = {
-                        "beat_url": beat_url,
-                        "status": "ready",
-                        "provider": "beatoven",
-                        "progress": 100
-                    }
-                    return success_response(
-                        data={
-                            "session_id": session_id,
-                            "url": job.get("beat_url"),
-                            "beat_url": job.get("beat_url"),
-                            "status": job.get("status"),
-                            "provider": job.get("provider"),
-                            "progress": job.get("progress", 0)
-                        },
-                        message="Beat generation started"
-                    )
-                
-                elif status in ("composing", "running", "queued"):
-                    logger.info(f"⏳ Beatoven status: {status} ({attempt+1}/60)")
-                    continue
-                else:
-                    raise Exception(f"Unexpected Beatoven status: {status}")
+                    elif status in ("composing", "running", "queued"):
+                        logger.info(f"⏳ Beatoven status: {status} ({attempt+1}/60)")
+                        continue
+                    else:
+                        raise Exception(f"Unexpected Beatoven status: {status}")
             
             raise Exception("Beatoven generation timed out (3 minutes)")
         
-        except requests.exceptions.RequestException as e:
+        except httpx.RequestError as e:
             logger.warning(f"Beatoven API request failed: {e} - falling back to demo beat")
         except Exception as e:
             logger.warning(f"Beatoven API failed: {e} - falling back to demo beat")
@@ -539,11 +543,11 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None), curre
         # For demo beats, use default metadata
         demo_metadata = {"duration": 60, "bpm": bpm or 120, "key": "C"}
         memory.update_metadata(tempo=bpm or 120, mood=mood, genre=genre)
-        memory.add_asset("beat", f"/media/{session_id}/beat.mp3", {"bpm": bpm or 120, "mood": mood, "source": "demo", "metadata": demo_metadata})
+        memory.add_asset("beat", f"/media/{current_user['user_id']}/{session_id}/beat.mp3", {"bpm": bpm or 120, "mood": mood, "source": "demo", "metadata": demo_metadata})
         memory.advance_stage("beat", "lyrics")
         
         # Prepare beat_url and beat_meta for orchestrator
-        beat_url = f"/media/{session_id}/beat.mp3"
+        beat_url = f"/media/{current_user['user_id']}/{session_id}/beat.mp3"
         beat_meta = {
             "bpm": bpm or 120,
             "mood": mood,
@@ -564,8 +568,8 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None), curre
         return success_response(
             data={
                 "session_id": session_id,
-                "url": f"/media/{session_id}/beat.mp3",
-                "beat_url": f"/media/{session_id}/beat.mp3",
+                "url": f"/media/{current_user['user_id']}/{session_id}/beat.mp3",
+                "beat_url": f"/media/{current_user['user_id']}/{session_id}/beat.mp3",
                 "status": "ready",
                 "provider": "demo",
                 "progress": 100
@@ -584,13 +588,13 @@ async def create_beat(request: Optional[BeatRequest] = Body(default=None), curre
             memory = get_or_create_project_memory(session_id, MEDIA_DIR)
             silent_metadata = {"duration": duration_sec or 60, "bpm": bpm or 120, "key": "C"}
             memory.update_metadata(tempo=bpm or 120, mood=mood, genre=genre)
-            memory.add_asset("beat", f"/media/{session_id}/beat.mp3", {"bpm": bpm or 120, "mood": mood, "source": "silent_fallback", "metadata": silent_metadata})
+            memory.add_asset("beat", f"/media/{current_user['user_id']}/{session_id}/beat.mp3", {"bpm": bpm or 120, "mood": mood, "source": "silent_fallback", "metadata": silent_metadata})
             
             # Phase 6: Auto-save to orchestrator
             try:
                 orchestrator = ProjectOrchestrator(current_user["user_id"], session_id)
                 orchestrator.update_stage("beat", {
-                    "url": f"/media/{session_id}/beat.mp3",
+                    "url": f"/media/{current_user['user_id']}/{session_id}/beat.mp3",
                     "meta": {
                         "bpm": bpm or 120,
                         "mood": mood,
@@ -842,7 +846,7 @@ Make it authentic and emotionally resonant."""
         
         # Update project memory
         memory = get_or_create_project_memory(session_id, MEDIA_DIR)
-        memory.add_asset("lyrics", f"/media/{session_id}/lyrics.txt", {"genre": request.genre, "mood": request.mood})
+        memory.add_asset("lyrics", f"/media/{current_user['user_id']}/{session_id}/lyrics.txt", {"genre": request.genre, "mood": request.mood})
         memory.advance_stage("lyrics", "upload")
         
         log_endpoint_event("/songs/write", session_id, "success", {"provider": provider, "voice_generated": voice_url is not None})
@@ -1488,6 +1492,36 @@ async def run_clean_mix(
         logger.error(f"Clean mix failed: {e}")
         return error_response("UNEXPECTED_ERROR", 500, f"Failed to create clean mix: {str(e)}")
 
+@app.post("/mix/{user_id}/{session_id}")
+async def mix_audio(user_id: str, session_id: str):
+    # compute paths
+    base = Path(f"./media/{user_id}/{session_id}")
+
+    vocal_path = base / "vocal.wav"
+    beat_path = base / "beat.mp3"
+    output_path = base / "mix" / "mix.wav"
+
+    # run DSP chain
+    await asyncio.to_thread(
+        apply_basic_mix,
+        str(vocal_path),
+        str(beat_path),
+        str(output_path)
+    )
+
+    # update project.json
+    result_url = f"/media/{user_id}/{session_id}/mix/mix.wav"
+    orchestrator = ProjectOrchestrator(user_id, session_id)
+    await orchestrator.update_stage(
+        "mix",
+        {
+            "path": result_url,
+            "processed": True
+        }
+    )
+
+    return {"mix_url": result_url}
+
 # ============================================================================
 # NEW RELEASE MODULE - REDESIGNED
 # ============================================================================
@@ -2087,34 +2121,34 @@ async def list_release_files(session_id: str = Query(...), current_user: dict = 
         if audio_dir.exists():
             audio_file = audio_dir / "mixed_mastered.wav"
             if audio_file.exists():
-                files.append(f"/media/{session_id}/release/audio/mixed_mastered.wav")
+                files.append(f"/media/{current_user['user_id']}/{session_id}/release/audio/mixed_mastered.wav")
         
         # Cover art (final_cover_3000.jpg, final_cover_1500.jpg, final_cover_vertical.jpg)
         cover_dir = release_dir / "cover"
         if cover_dir.exists():
             # Scan for final cover files
             for file in cover_dir.glob("final_cover*.jpg"):
-                files.append(f"/media/{session_id}/release/cover/{file.name}")
+                files.append(f"/media/{current_user['user_id']}/{session_id}/release/cover/{file.name}")
         
         # Metadata
         metadata_dir = release_dir / "metadata"
         if metadata_dir.exists():
             metadata_file = metadata_dir / "metadata.json"
             if metadata_file.exists():
-                files.append(f"/media/{session_id}/release/metadata/metadata.json")
+                files.append(f"/media/{current_user['user_id']}/{session_id}/release/metadata/metadata.json")
         
         # Copy files
         copy_dir = release_dir / "copy"
         if copy_dir.exists():
             for copy_file in copy_dir.glob("*.txt"):
-                files.append(f"/media/{session_id}/release/copy/{copy_file.name}")
+                files.append(f"/media/{current_user['user_id']}/{session_id}/release/copy/{copy_file.name}")
         
         # Lyrics PDF
         lyrics_dir = release_dir / "lyrics"
         if lyrics_dir.exists():
             lyrics_file = lyrics_dir / "lyrics.pdf"
             if lyrics_file.exists():
-                files.append(f"/media/{session_id}/release/lyrics/lyrics.pdf")
+                files.append(f"/media/{current_user['user_id']}/{session_id}/release/lyrics/lyrics.pdf")
         
         log_endpoint_event("/release/files", session_id, "success", {"count": len(files)})
         return success_response(
@@ -2802,22 +2836,23 @@ class ProjectLoadRequestPhase6(BaseModel):
     session_id: str
 
 @api.post("/project/load")
-def load_project(request: ProjectLoadRequestPhase6, current_user: dict = Depends(get_current_user)):
+async def load_project(request: ProjectLoadRequestPhase6, current_user: dict = Depends(get_current_user)):
     orchestrator = ProjectOrchestrator(current_user["user_id"], request.session_id)
-    state = orchestrator.get_full_state()
+    state = await asyncio.to_thread(orchestrator.get_full_state)
     if not state:
         return error_response("PROJECT_NOT_FOUND", 404, "Project not found")
     return success_response(data=state)
 
 @api.get("/project/state/{session_id}")
-def get_project_state(session_id: str, current_user: dict = Depends(get_current_user)):
+async def get_project_state(session_id: str, current_user: dict = Depends(get_current_user)):
     orchestrator = ProjectOrchestrator(current_user["user_id"], session_id)
-    return success_response(data=orchestrator.get_full_state())
+    state = await asyncio.to_thread(orchestrator.get_full_state)
+    return success_response(data=state)
 
 @api.post("/project/reset")
-def reset_project(request: ProjectLoadRequestPhase6, current_user: dict = Depends(get_current_user)):
+async def reset_project(request: ProjectLoadRequestPhase6, current_user: dict = Depends(get_current_user)):
     orchestrator = ProjectOrchestrator(current_user["user_id"], request.session_id)
-    orchestrator.reset_project()
+    await asyncio.to_thread(orchestrator.reset_project)
     return success_response(message="Project reset.")
 
 # ============================================================================

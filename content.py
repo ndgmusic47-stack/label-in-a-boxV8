@@ -346,7 +346,7 @@ async def schedule_video(request: ScheduleRequest):
         
         # Try GETLATE API if key available
         if getlate_key:
-            result = scheduler.schedule_with_getlate(
+            result = await scheduler.schedule_with_getlate(
                 platform=request.platform,
                 content=full_caption,
                 scheduled_time=request.schedule_time,

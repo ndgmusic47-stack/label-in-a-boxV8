@@ -68,9 +68,13 @@ class CoverArtGenerator:
             img_with_text.save(output_path, "JPEG", quality=90)
             logger.info(f"Cover saved to {output_path}")
             
+            # Extract user_id and session_id from session_dir path (./media/{user_id}/{session_id}/)
+            user_id = session_dir.parent.name
+            session_id = session_dir.name
+            
             return {
                 "ok": True,
-                "url": f"/media/{session_dir.name}/cover.jpg"
+                "url": f"/media/{user_id}/{session_id}/cover.jpg"
             }
             
         except Exception as e:
