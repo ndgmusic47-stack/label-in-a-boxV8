@@ -1,33 +1,60 @@
-import json
 import os
-from pathlib import Path
-from datetime import datetime
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import declarative_base
+from typing import AsyncGenerator
 
-USER_DB_PATH = Path("data/users.json")
+# Default to SQLite with aiosqlite, but allow override via DATABASE_URL env var
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./sql_app.db")
+
+# Create async engine
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,  # Set to True for SQL query logging during development
+    future=True,
+)
+
+# Create declarative base for models
+Base = declarative_base()
+
+# Create async session factory
+AsyncSessionLocal = async_sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
+)
 
 
-def load_users():
-    """Load users from JSON file"""
-    if not USER_DB_PATH.exists():
-        return {}
-    with open(USER_DB_PATH, "r") as f:
-        data = json.load(f)
-        # Convert datetime strings back to datetime objects for created_at
-        for user_id, user_data in data.items():
-            if isinstance(user_data.get("created_at"), str):
-                data[user_id]["created_at"] = datetime.fromisoformat(user_data["created_at"])
-        return data
+async def init_db():
+    """
+    Initialize the database by creating all tables.
+    This should be called on application startup.
+    """
+    async with engine.begin() as conn:
+        # Import models here to ensure they're registered with Base
+        from models import User  # noqa: F401
+        # Create all tables
+        await conn.run_sync(Base.metadata.create_all)
 
 
-def save_users(users):
-    """Save users to JSON file"""
-    USER_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # Convert datetime objects to ISO strings for JSON serialization
-    serializable_users = {}
-    for user_id, user_data in users.items():
-        serializable_users[user_id] = user_data.copy()
-        if isinstance(user_data.get("created_at"), datetime):
-            serializable_users[user_id]["created_at"] = user_data["created_at"].isoformat()
-    with open(USER_DB_PATH, "w") as f:
-        json.dump(serializable_users, f, indent=4)
-
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Dependency function that yields a database session.
+    Use this in FastAPI route dependencies to get a database session.
+    
+    Example:
+        @app.get("/users")
+        async def get_users(db: AsyncSession = Depends(get_db)):
+            # Use db here
+            pass
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()

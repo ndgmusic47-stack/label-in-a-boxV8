@@ -19,3 +19,10 @@ reportlab
 PyJWT
 passlib[bcrypt]
 stripe
+sqlalchemy
+aiosqlite
+pytest
+pytest-asyncio
+httpx
+aiofiles
+redis

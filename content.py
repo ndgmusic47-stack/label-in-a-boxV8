@@ -357,9 +357,9 @@ async def schedule_video(request: ScheduleRequest):
             
             if result.get("success"):
                 # Update project memory
-                memory = get_or_create_project_memory(session_id, Path("./media"))
-                memory.update("contentScheduled", True)
-                memory.advance_stage("content", "analytics")
+                memory = await get_or_create_project_memory(session_id, Path("./media"))
+                await memory.update("contentScheduled", True)
+                await memory.advance_stage("content", "analytics")
                 
                 return success_response(
                     data={
@@ -407,9 +407,9 @@ async def schedule_video(request: ScheduleRequest):
             json.dump(schedule, f, indent=2)
         
         # Update project memory
-        memory = get_or_create_project_memory(session_id, Path("./media"))
-        memory.update("contentScheduled", True)
-        memory.advance_stage("content", "analytics")
+        memory = await get_or_create_project_memory(session_id, Path("./media"))
+        await memory.update("contentScheduled", True)
+        await memory.advance_stage("content", "analytics")
         
         return success_response(
             data={
@@ -478,8 +478,8 @@ async def save_scheduled(request: SaveScheduledRequest):
         json.dump(schedule, f, indent=2)
     
     # Update project memory
-    memory = get_or_create_project_memory(session_id, Path("./media"))
-    memory.update("contentScheduled", True)
+    memory = await get_or_create_project_memory(session_id, Path("./media"))
+    await memory.update("contentScheduled", True)
     
     return success_response(
         data={"post_id": post["post_id"], "status": "saved"},

@@ -151,7 +151,7 @@ class AnalyticsEngine:
                 "message": str(e)
             }
     
-    def update_analytics(
+    async def update_analytics(
         self,
         project_memory,
         streams: Optional[int] = None,
@@ -205,7 +205,7 @@ class AnalyticsEngine:
             
             # Save back to project memory
             project_memory.project_data["analytics"] = current_analytics
-            project_memory.save()
+            await project_memory.save()
             
             return {
                 "status": "updated",
